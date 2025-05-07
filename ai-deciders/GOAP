@@ -1,0 +1,739 @@
+
+// When creating goap actions think:
+/*
+
+	GOAP gets you to the party.
+	The party handles itself.
+	
+	GOAP is about getting into the right context.
+
+	The agent doesn’t plan every bite of food with GOAP —
+	It just planned to get to the fridge.
+	
+*/
+
+// Started : 4:00 PM on April 25, 2025.
+// Ended 9:00 PM on April 25, 2025
+
+
+// Simple T/F GOAP Sys.
+
+
+function brainGOAP() constructor
+{
+	actions = {};
+	goals = {};
+	sensors = {};
+	
+	targetGoal = undefined;
+	
+	planner = new plannerGOAP(); 
+	plan = [];
+	currentActionIndex = 0;  // init action index
+	
+	
+	showDebug = true;
+	showExtraDebug = false;
+	
+	#region Primary Functions
+	
+	addAction = function(_action)
+	{
+		
+		var _name = _action.name;
+		
+		if struct_exists(actions, _name)
+		{
+			if showDebug show_debug_message($"Action ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(actions, _name, _action);
+		
+	}
+	
+	addGoal = function(_goal)
+	{
+		
+		var _name = _goal.name;
+		
+		if struct_exists(goals, _name)
+		{
+			if showDebug show_debug_message($"Goal ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(goals, _name, _goal);
+		
+	}
+	
+	registerSensor = function(_name, _func)
+	{
+		
+		if struct_exists(sensors, _name)
+		{
+			if showDebug show_debug_message($"Sensor ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(sensors, _name, _func);
+		
+	}
+	
+	setTargetGoal = function(_goalName)
+	{
+		
+		//show_debug_message("Goals: "+string(goals));
+		
+		if !struct_exists(goals, _goalName)
+		{
+			if showDebug show_debug_message("Set target goal failed. Goal DNE.");
+			return;
+		}
+		
+		targetGoal = struct_get(goals, _goalName);
+		
+	}
+	
+	generatePlan = function()
+    {
+        if (targetGoal == undefined)
+        {
+            show_debug_message("No target goal set.");
+            return [];
+        }
+        
+        // Get the current state using the sensors
+        var current_state = captureSnapshot();
+        
+        // Retrieve the goal and available actions
+        var goal_state = targetGoal.conditions;
+        var available_actions = actions;
+        
+        // Call the planner to generate the plan
+        plan = planner.plan(current_state, goal_state, available_actions);
+		
+		//if (showDebug and showExtraDebug) planner.printLog();
+		planner.printLog();
+		
+		plan = planner.getActionsForGoal(array_last(plan)); // stringify the plan
+        
+        if (array_length(plan) > 0)
+        {
+            if showDebug show_debug_message("Plan generated successfully.");
+			
+			if (showExtraDebug and showDebug) printPlan();
+			
+        }
+        else
+        {
+			// Uncommenting this makes the debug messages get really cluttered.
+            //if showDebug show_debug_message("No valid plan could be generated.");
+        }
+        
+		currentActionIndex = 0;  // Reset action index
+		
+		
+    }
+	
+	// GOAP Execution
+	executePlan = function()
+	{
+	    if is_undefined(targetGoal)
+	    {
+	        if (showDebug) show_debug_message("Cannot Execute Plan because no goal is set.");
+	        return;
+	    }
+    
+	    if array_length(plan) <= 0
+	    {
+	        generatePlan();
+	        return;
+	    }
+    
+	    if (currentActionIndex >= array_length(plan))
+	    {
+	        if (showDebug) show_debug_message("Completed Plan");
+	        generatePlan();
+	        return;
+	    }
+
+	    var _actionName = plan[currentActionIndex];
+	    var _action = struct_get(actions, _actionName);
+	    var _actionFunction = getActionFunction(_actionName);
+
+	    if (is_undefined(_actionFunction))
+	    {
+	        if (showDebug) show_debug_message("Bailing Executing the Plan: action missing function");
+	        return;
+	    }
+
+	    // === 1. FIRST, check if we can still do this action ===
+	    if (!planner.preconditionsMet(_action.conditions, captureSnapshot()))
+	    {
+	        if (showDebug) show_debug_message("Regenerating Plan: Cannot continue " + _actionName + ", due to unmet conditions.");
+	        generatePlan();
+	        return;
+	    }
+
+	    // === 2. THEN, run the action ===
+	    var actionComplete = _actionFunction();
+		
+	    //if (showDebug) show_debug_message($"Action {_actionName} Executed.");
+
+	    if (actionComplete)
+	    {
+	        if (showDebug) show_debug_message(_actionName + " is complete.");
+	        currentActionIndex++;
+	    }
+	}
+
+
+	
+	#endregion
+
+	#region Helper Functions
+	
+	getSensorValue = function(_sensorName)
+	{
+		if !struct_exists(sensors, _sensorName)
+		{
+			if showDebug show_debug_message($"Cannot get Sensor Value for {_sensorName}");
+			return undefined;
+		}
+		
+		var _val = struct_get(sensors, _sensorName);
+		return _val();
+	}
+	
+	
+	
+	getActionFunction = function(_actionName)
+	{
+		if !struct_exists(actions, _actionName)
+		{
+			if showDebug show_debug_message($"Cannot get Action Function for {_actionName}");
+			return undefined;
+		}
+		
+		var _action = struct_get(actions, _actionName);
+		return _action.executeFunction;
+		
+	}
+	
+	captureSnapshot = function()
+	{
+		var _snap = {};
+		
+		var _sensor_names = struct_get_names(sensors);
+		
+		for(var i=0; i<array_length(_sensor_names); i++)
+		{
+			var _name = _sensor_names[i];
+			
+			var _val = struct_get(sensors, _name);
+			
+			var _funct_ran = _val();
+			
+			struct_set(_snap, _name, _funct_ran);
+		}
+		
+		
+		return _snap;
+		
+	}
+
+	printPlan = function()
+	{
+		var _len = array_length(plan);
+		
+		if (_len <= 0)
+		{
+			show_debug_message("Print Plan - Plan is empty.");
+			return;
+		}
+		
+		show_debug_message($"({_len}) ~ Printing Plan:");
+		
+		//show_debug_message(string(plan));
+		
+		for(var a=0; a<_len; a++)
+		{
+			
+			var _act = plan[a];
+			show_debug_message($"{a+1}: {_act}");
+			
+		}
+		
+	}
+	
+	drawSensors = function(_x, _y)
+	{
+		var _sensor_names = struct_get_names(sensors);
+		
+		for(var i=0; i<array_length(_sensor_names); i++)
+		{
+			var _sensor = _sensor_names[i];
+			var _val = struct_get(sensors, _sensor);
+			
+			draw_text(_x, (_y-(20*i)), $"Sensor: {_sensor} ~ {_val()}");
+			
+		}
+		
+	}
+	
+	#endregion
+	
+}
+
+
+function plannerGOAP() constructor
+{
+    open_list = [];
+    closed_list = [];
+    nextID = 1;
+	
+	astarLog = {
+	    nodes_opened: 0,
+	    nodes_failed: 0,
+	    nodes_processed: 0,
+	    actions_evaluated: 0,
+		time_took: 0
+	}
+	
+	default_log = variable_clone(astarLog);
+	
+	resetLog = function()
+	{
+		astarLog = default_log;
+	}
+	
+	printLog = function()
+	{
+		show_debug_message($"Log: {astarLog}");
+	}
+
+	
+	#region Primary Helper Functions
+
+    heuristicScore = function(_state, _goal)
+	{
+        var error = 0;
+        var keys = struct_get_names(_goal);
+        for (var i = 0; i < array_length(keys); i++)
+		{
+            var key = keys[i];
+            if (!struct_exists(_state, key) || _state[$ key] != _goal[$ key])
+			{
+                error++;
+            }
+        }
+        return error;
+    }
+
+    preconditionsMet = function(_conds, _state)
+	{
+        var keys = struct_get_names(_conds);
+        for (var i = 0; i < array_length(keys); i++)
+		{
+            var key = keys[i];
+            if (!struct_exists(_state, key) || _state[$ key] != _conds[$ key])
+			{
+                return false;
+            }
+        }
+        return true;
+    }
+
+    statesEqual = function(_a, _b)
+	{
+        var keys = struct_get_names(_b);
+        for (var i = 0; i < array_length(keys); i++)
+		{
+            var key = keys[i];
+            if (!struct_exists(_a, key) || _a[$ key] != _b[$ key])
+			{
+                return false;
+            }
+        }
+        return true;
+    }
+
+    listContainsState = function(_list, _state)
+	{
+        for (var i = 0; i < array_length(_list); i++)
+		{
+            if (statesEqual(_list[i].state, _state)) return true;
+        }
+        return false;
+    }
+
+    indexOfState = function(_list, _state)
+	{
+        for (var i = 0; i < array_length(_list); i++)
+		{
+            if (statesEqual(_list[i].state, _state)) return i;
+        }
+        return -1;
+    }
+
+    reconstructPath = function(_node)
+	{
+        var path = [];
+        while (_node.parent != undefined)
+		{
+            array_insert(path, 0, _node);
+            _node = _node.parent;
+        }
+        return path;
+    }
+	
+	getActionsForGoal = function(goal_node)
+	{
+	    var actions = [];
+
+	    // Start from the goal node and walk back through parents
+	    var current = goal_node;
+	    while (current != undefined && current.parent != undefined)
+		{
+	        array_push(actions, current.action); // Collect the action at this node
+	        current = current.parent; // Move to the parent node
+	    }
+
+	    // The actions are collected in reverse order, so reverse them for correct sequence
+	    actions = array_reverse(actions);
+
+	    return actions;
+	}
+
+	#endregion
+	
+	#region Secondary Helper Functions
+	
+	getBestNode = function(_list)
+	{
+	    var best_f = infinity; // very big number
+	    var candidates = [];
+
+	    for (var i = 0; i < array_length(_list); i++)
+	    {
+	        var node = _list[i];
+	        if (node.f < best_f)
+	        {
+	            best_f = node.f;
+	            candidates = [node]; // new best node found
+	        }
+	        else if (node.f == best_f)
+	        {
+	            array_push(candidates, node); // another equally good node
+	        }
+	    }
+
+	    // Now pick randomly among the best candidates
+	    return candidates[irandom(array_length(candidates) - 1)];
+	}
+
+	
+	moveNode = function(node, from_list, to_list)
+	{
+	    // Manually find the node by ID (or use state match if you prefer)
+	    for (var i = 0; i < array_length(from_list); i++)
+		{
+	        if (from_list[i].ID == node.ID)
+			{
+	            array_delete(from_list, i, 1);
+	            break;
+	        }
+	    }
+	    array_push(to_list, node);
+		
+		// Increment the counter for opened nodes
+		astarLog.nodes_opened++;
+	}
+
+	applyEffects = function(state, effects)
+	{
+	    var new_state = variable_clone(state);
+	    var keys = struct_get_names(effects);
+	    for (var i = 0; i < array_length(keys); i++)
+		{
+	        var k = keys[i];
+	        new_state[$ k] = effects[$ k];
+	    }
+	    return new_state;
+	}
+
+	updateNode = function(node, g, h, f, parent, action_name)
+	{
+	    node.g = g;
+	    node.h = h;
+	    node.f = f;
+	    node.parent = parent;
+	    node.action = action_name;
+	}
+
+	#endregion
+	
+	function astarNode(_id, _state, _action, _g, _h, _parent) constructor
+	{
+	    ID      = _id;                    // unique numeric
+	    state   = variable_clone(_state);    // 
+	    action  = _action;                // string name
+	    g       = _g;                     // accumulated cost
+	    h       = _h;                     // heuristic
+	    f       = _g + _h;                // total score
+	    parent  = _parent;                // link to another astarNode
+	}
+
+    plan = function(_start_state, _goal_state, _actions)
+	{
+		
+		resetLog();
+		astarLog.time_took = current_time;
+		
+	    // 1. Init
+	    open_list = [];
+	    closed_list = [];
+	    nextID = 1;
+
+	    var start_node = new astarNode(0, _start_state, "", 0, heuristicScore(_start_state, _goal_state), undefined);
+	    array_push(open_list, start_node);
+
+	    // 2. Main Loop
+	    while (array_length(open_list) > 0)
+	    {
+	        var current = getBestNode(open_list);
+	        moveNode(current, open_list, closed_list);
+			
+			astarLog.nodes_processed++;
+
+	        if (statesEqual(current.state, _goal_state))
+			{
+				
+				astarLog.time_took = (current_time - astarLog.time_took);
+				
+	            return reconstructPath(current);
+	        }
+
+	        // 3. Check available actions
+	        var action_keys = struct_get_names(_actions);
+	        for (var i = 0; i < array_length(action_keys); i++)
+	        {
+	            var action = _actions[$ action_keys[i]];
+	            if (!preconditionsMet(action.conditions, current.state))
+				{
+					// Increment the counter for failed nodes (actions that don't meet conditions)
+					astarLog.nodes_failed++;
+					continue;
+				}
+				
+	            // 4. Apply effects to get new state
+	            var new_state = applyEffects(current.state, action.reactions);
+
+	            // 5. Skip if already seen
+	            if (listContainsState(closed_list, new_state)) continue;
+
+	            var g2 = current.g + action.cost;
+	            var h2 = heuristicScore(new_state, _goal_state);
+	            var f2 = g2 + h2;
+
+	            var existing_index = indexOfState(open_list, new_state);
+	            if (existing_index != -1)
+	            {
+	                var existing = open_list[existing_index];
+	                if (g2 < existing.g)
+	                {
+	                    updateNode(existing, g2, h2, f2, current, action.name);
+	                }
+	                continue;
+	            }
+
+	            // 6. New node
+	            var new_node = new astarNode(nextID++, new_state, action.name, g2, h2, current);
+	            array_push(open_list, new_node);
+				
+				// Increment the counter for nodes opened
+				astarLog.nodes_opened++;
+	        }
+			
+	    }
+		
+		
+		
+		
+	    // No plan found
+	    return [];
+	}
+
+	
+}
+
+
+#region Node Stuff
+
+function nodeGOAP(_name) constructor
+{
+	name = _name;
+	
+	conditions = {};
+	reactions = {};
+	
+	showDebug = true; 
+	
+	addCondition = function(_name, _val)
+	{
+		if (struct_exists(conditions, _name))
+		{
+			if showDebug show_debug_message($"Condition ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(conditions, _name, _val);
+		
+	}
+	
+	addReaction = function(_name, _val)
+	{
+		if (struct_exists(reactions, _name))
+		{
+			if showDebug show_debug_message($"Reaction ({_name}) Exists Already.");
+			return;
+		}
+		
+		//if !(struct_exists(conditions, _name))
+		//{
+		//	if showDebug show_debug_message($"Trying to add reaction ({_name}) without matching condition.");
+		//	return;
+		//}
+		
+		struct_set(reactions, _name, _val);
+	}
+	
+	
+}
+
+
+function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
+{
+	cost = _cost;
+	
+	executeFunction = undefined;
+	
+	// Function to set the execution logic
+    setExecuteFunction = function(_func)
+	{
+        executeFunction = _func;  // Set the function that executes the action
+    }
+    
+    // Function to execute the action
+    execute = function()
+	{
+        if (executeFunction != undefined)
+		{
+            return executeFunction();  // Call the function to execute the action
+        }
+        return false;  // Return false if no function is set
+    }
+	
+}
+
+
+function goalGOAP(_name) : nodeGOAP(_name) constructor
+{
+	// you can add priorities, a lot of different things
+	
+	
+}
+
+#endregion
+
+
+// Integer Based T/F GOAP Sys.
+
+
+
+/*
+
+Example Code:
+
+// GOAP BRAIN
+brain = new brainGOAP();
+
+//Actions
+var makeActionBuildFire = new actionGOAP("BuildFire", 2); 
+makeActionBuildFire.addCondition("hasWood", true);
+makeActionBuildFire.addReaction("hasFire", true);
+makeActionBuildFire.setExecuteFunction(function()
+{
+	show_debug_message("build fye.");
+	return true;
+});
+
+var makeActionGatherWood = new actionGOAP("GatherWood", 1); 
+makeActionGatherWood.addCondition("hasAxe", true);
+makeActionGatherWood.addReaction("hasWood", true);
+makeActionGatherWood.setExecuteFunction(function()
+{
+	show_debug_message("Gather wood.");
+	return true;
+});
+
+var makeActionWarmUp = new actionGOAP("WarmUp", 1); 
+makeActionWarmUp.addCondition("hasFire", true);
+makeActionWarmUp.addReaction("StayWarm", true);
+makeActionWarmUp.setExecuteFunction(function()
+{
+	show_debug_message("Warm up by the fye.");
+	// return false if the action is not completed. add conditionals or sum.
+	return true;
+});
+
+// Goals
+var makeGoalStayWarm = new goalGOAP("StayWarm");
+makeGoalStayWarm.addCondition("StayWarm", true);
+
+
+// Register sensors (these return the world state)
+brain.registerSensor("hasAxe", function() { return true; });
+brain.registerSensor("hasWood", function() { return false; });
+brain.registerSensor("hasFire", function() { return false; });
+
+for the sensors you need to make them return true or false
+
+example:
+function hasWood()
+{
+	if inventoryHas("wood")
+	{
+		return true;
+	} else {
+		return false;
+	}
+}
+
+
+
+// Add actions
+brain.addAction(makeActionGatherWood);
+brain.addAction(makeActionBuildFire);
+brain.addAction(makeActionWarmUp);
+
+// Add goal
+brain.addGoal(makeGoalStayWarm);
+
+// Set target goal
+brain.setTargetGoal("StayWarm");
+
+// Create plan
+brain.generatePlan();
+
+brain.printPlan();
+
+
+// Place in Step Event 
+brain.executePlan();
+
+
+*/
+
+
