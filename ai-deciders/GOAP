@@ -21,6 +21,8 @@
 
 function brainGOAP() constructor
 {
+	randomize();
+	
 	actions = {};
 	goals = {};
 	sensors = {};
@@ -52,6 +54,15 @@ function brainGOAP() constructor
 		
 	}
 	
+	addActionsByArray = function(_actions)
+	{
+		for(var i=0; i<array_length(_actions); i++)
+		{
+			var _a = _actions[i];
+			addAction(_a);
+		}
+	}
+	
 	addGoal = function(_goal)
 	{
 		
@@ -66,6 +77,16 @@ function brainGOAP() constructor
 		struct_set(goals, _name, _goal);
 		
 	}
+	
+	addGoalsByArray = function(_goals)
+	{
+		for(var i=0; i<array_length(_goals); i++)
+		{
+			var _g = _goals[i];
+			addGoal(_g);
+		}
+	}
+	
 	
 	registerSensor = function(_name, _func)
 	{
@@ -96,45 +117,67 @@ function brainGOAP() constructor
 	}
 	
 	generatePlan = function()
-    {
-        if (targetGoal == undefined)
-        {
-            show_debug_message("No target goal set.");
-            return [];
-        }
+	{
+	    if (showExtraDebug) planner.printLog();
+	    
+
+	    if (targetGoal == undefined)
+	    {
+	        if showDebug show_debug_message("No target goal set. Cannot generate plan.");
         
-        // Get the current state using the sensors
-        var current_state = captureSnapshot();
-        
-        // Retrieve the goal and available actions
-        var goal_state = targetGoal.conditions;
-        var available_actions = actions;
-        
-        // Call the planner to generate the plan
-        plan = planner.plan(current_state, goal_state, available_actions);
+	        if (array_length(plan) > 0)
+	        {
+	            plan = [];
+	            currentActionIndex = 0;
+	            if showDebug show_debug_message("Cleared existing plan due to no target goal.");
+	        }
+
+	        return false;
+	    }
+
+	    var current_state = captureSnapshot();
+	    var goal_state = targetGoal.conditions;
+	    var available_actions = actions;
+	    var old_plan = plan;
+
+	    var potential_plan_nodes = planner.plan(current_state, goal_state, available_actions);
+	    var new_plan = planner.getActionsForGoal(array_last(potential_plan_nodes));
+
+	    // No plan generated
+	    if (array_length(new_plan) == 0)
+	    {
+	        if (array_length(old_plan) > 0)
+	        {
+	            plan = [];
+	            currentActionIndex = 0;
+	            if showDebug show_debug_message("No valid plan could be generated. Clearing current plan.");
+	        }
+	        else if (showDebug && showExtraDebug)
+	        {
+	            show_debug_message("Still no valid plan could be generated.");
+	        }
+
+	        return false;
+	    }
+
+	    // Same plan as before
+	    if (plansAreEqual(old_plan, new_plan))
+	    {
+	        if (showDebug && showExtraDebug) show_debug_message("Generated same plan, continuing current execution.");
+	        return false;
+	    }
+
+	    // New plan generated
+	    plan = new_plan;
+	    currentActionIndex = 0;
+	    if showDebug show_debug_message("New plan generated successfully.");
+	    if (showDebug) printPlan();
 		
-		//if (showDebug and showExtraDebug) planner.printLog();
 		planner.printLog();
 		
-		plan = planner.getActionsForGoal(array_last(plan)); // stringify the plan
-        
-        if (array_length(plan) > 0)
-        {
-            if showDebug show_debug_message("Plan generated successfully.");
-			
-			if (showExtraDebug and showDebug) printPlan();
-			
-        }
-        else
-        {
-			// Uncommenting this makes the debug messages get really cluttered.
-            //if showDebug show_debug_message("No valid plan could be generated.");
-        }
-        
-		currentActionIndex = 0;  // Reset action index
-		
-		
-    }
+	    return true;
+	}
+
 	
 	// GOAP Execution
 	executePlan = function()
@@ -160,14 +203,9 @@ function brainGOAP() constructor
 
 	    var _actionName = plan[currentActionIndex];
 	    var _action = struct_get(actions, _actionName);
-	    var _actionFunction = getActionFunction(_actionName);
-
-	    if (is_undefined(_actionFunction))
-	    {
-	        if (showDebug) show_debug_message("Bailing Executing the Plan: action missing function");
-	        return;
-	    }
-
+		
+		
+		
 	    // === 1. FIRST, check if we can still do this action ===
 	    if (!planner.preconditionsMet(_action.conditions, captureSnapshot()))
 	    {
@@ -175,17 +213,27 @@ function brainGOAP() constructor
 	        generatePlan();
 	        return;
 	    }
+		
+		
 
 	    // === 2. THEN, run the action ===
-	    var actionComplete = _actionFunction();
+		_action.doOnEntry();
+		_action.execute();
 		
-	    //if (showDebug) show_debug_message($"Action {_actionName} Executed.");
-
-	    if (actionComplete)
-	    {
-	        if (showDebug) show_debug_message(_actionName + " is complete.");
-	        currentActionIndex++;
-	    }
+		
+		// === 3. FINALLY, check if it's complete (effects are satisfied) ===
+		if (planner.reactionsSatisfied(_action.reactions, captureSnapshot()))
+		{
+		    if (showDebug) show_debug_message(_actionName + " is complete.");
+		    
+			_action.doOnExit();
+			_action.reset();  // Reset the entry/exit flags for the next time
+			
+			currentActionIndex++;
+			
+			//show_debug_message($"NEW Current Action: {plan[currentActionIndex]}");
+		}
+		
 	}
 
 
@@ -206,7 +254,26 @@ function brainGOAP() constructor
 		return _val();
 	}
 	
-	
+	plansAreEqual = function(plan1, plan2)
+    {
+        // If either plan is undefined, they are not equal unless both are (handled by length check)
+        if (is_undefined(plan1) || is_undefined(plan2)) return false;
+
+        if (array_length(plan1) != array_length(plan2))
+        {
+            return false; // Plans are not equal if lengths differ
+        }
+
+        for (var i = 0; i < array_length(plan1); i++)
+        {
+            if (plan1[i] != plan2[i])
+            {
+                return false; // Plans are not equal if any action name differs at the same index
+            }
+        }
+
+        return true; // Plans are equal if lengths and all action names match
+    }
 	
 	getActionFunction = function(_actionName)
 	{
@@ -305,7 +372,9 @@ function plannerGOAP() constructor
 	
 	resetLog = function()
 	{
-		astarLog = default_log;
+		astarLog = variable_clone(default_log);
+		
+		//show_debug_message("Restarting A* Log");
 	}
 	
 	printLog = function()
@@ -323,27 +392,38 @@ function plannerGOAP() constructor
         for (var i = 0; i < array_length(keys); i++)
 		{
             var key = keys[i];
-            if (!struct_exists(_state, key) || _state[$ key] != _goal[$ key])
-			{
-                error++;
-            }
+            if (!hasMatchingKey(_state, _goal, key)) error++;
+
         }
         return error;
     }
 
     preconditionsMet = function(_conds, _state)
 	{
-        var keys = struct_get_names(_conds);
-        for (var i = 0; i < array_length(keys); i++)
+        var _keys = struct_get_names(_conds);
+        for (var i = 0; i < array_length(_keys); i++)
 		{
-            var key = keys[i];
-            if (!struct_exists(_state, key) || _state[$ key] != _conds[$ key])
-			{
-                return false;
-            }
+            var key = _keys[i];
+			if (!hasMatchingKey(_state, _conds, key)) return false
+
         }
         return true;
     }
+
+	reactionsSatisfied = function(_effects, _state)
+	{
+	    var _keys = struct_get_names(_effects);
+	    for (var i = 0; i < array_length(_keys); i++)
+	    {
+	        var key = _keys[i];
+	        if (!struct_exists(_state, key) || _state[$ key] != _effects[$ key])
+	        {
+	            return false;
+	        }
+	    }
+	    return true;
+	}
+
 
     statesEqual = function(_a, _b)
 	{
@@ -361,6 +441,8 @@ function plannerGOAP() constructor
 
     listContainsState = function(_list, _state)
 	{
+		//if _state == undefined return false;
+		
         for (var i = 0; i < array_length(_list); i++)
 		{
             if (statesEqual(_list[i].state, _state)) return true;
@@ -410,6 +492,14 @@ function plannerGOAP() constructor
 	
 	#region Secondary Helper Functions
 	
+	
+	hasMatchingKey = function(_a, _b, key)
+	{
+	    return struct_exists(_a, key) && _a[$ key] == _b[$ key];
+	}
+
+	
+	
 	getBestNode = function(_list)
 	{
 	    var best_f = infinity; // very big number
@@ -432,7 +522,6 @@ function plannerGOAP() constructor
 	    // Now pick randomly among the best candidates
 	    return candidates[irandom(array_length(candidates) - 1)];
 	}
-
 	
 	moveNode = function(node, from_list, to_list)
 	{
@@ -447,11 +536,9 @@ function plannerGOAP() constructor
 	    }
 	    array_push(to_list, node);
 		
-		// Increment the counter for opened nodes
-		astarLog.nodes_opened++;
 	}
 
-	applyEffects = function(state, effects)
+	applyStateEffects = function(state, effects)
 	{
 	    var new_state = variable_clone(state);
 	    var keys = struct_get_names(effects);
@@ -474,6 +561,9 @@ function plannerGOAP() constructor
 
 	#endregion
 	
+	#region		<Planning>
+	
+	
 	function astarNode(_id, _state, _action, _g, _h, _parent) constructor
 	{
 	    ID      = _id;                    // unique numeric
@@ -484,6 +574,7 @@ function plannerGOAP() constructor
 	    f       = _g + _h;                // total score
 	    parent  = _parent;                // link to another astarNode
 	}
+
 
     plan = function(_start_state, _goal_state, _actions)
 	{
@@ -512,14 +603,21 @@ function plannerGOAP() constructor
 				
 				astarLog.time_took = (current_time - astarLog.time_took);
 				
+				
+				
 	            return reconstructPath(current);
 	        }
 
 	        // 3. Check available actions
 	        var action_keys = struct_get_names(_actions);
+			
+			action_keys = array_shuffle(action_keys);	// Evaluate Nodes Equally even if their the same cost or action conditions and reactions 
+			
 	        for (var i = 0; i < array_length(action_keys); i++)
 	        {
 	            var action = _actions[$ action_keys[i]];
+				
+				
 	            if (!preconditionsMet(action.conditions, current.state))
 				{
 					// Increment the counter for failed nodes (actions that don't meet conditions)
@@ -528,7 +626,7 @@ function plannerGOAP() constructor
 				}
 				
 	            // 4. Apply effects to get new state
-	            var new_state = applyEffects(current.state, action.reactions);
+	            var new_state = applyStateEffects(current.state, action.reactions);
 
 	            // 5. Skip if already seen
 	            if (listContainsState(closed_list, new_state)) continue;
@@ -552,6 +650,8 @@ function plannerGOAP() constructor
 	            var new_node = new astarNode(nextID++, new_state, action.name, g2, h2, current);
 	            array_push(open_list, new_node);
 				
+				
+				
 				// Increment the counter for nodes opened
 				astarLog.nodes_opened++;
 	        }
@@ -565,6 +665,8 @@ function plannerGOAP() constructor
 	    return [];
 	}
 
+
+	#endregion
 	
 }
 
@@ -617,7 +719,16 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 {
 	cost = _cost;
 	
+	// needed if you're using the executePlan function
 	executeFunction = undefined;
+	
+	// Optional functions 
+	onEntryFunc = undefined;
+	onExitFunc = undefined;
+	
+	// Flags to track whether onEntry and onExit have been executed
+    onEntryDone = false;
+    onExitDone = false;
 	
 	// Function to set the execution logic
     setExecuteFunction = function(_func)
@@ -625,14 +736,55 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
         executeFunction = _func;  // Set the function that executes the action
     }
     
+	setEntryFunction = function(_func)
+	{
+		onEntryFunc = _func;
+	}
+	
+	setExitFunction = function(_func)
+	{
+		onExitFunc = _func;
+	}
+	
     // Function to execute the action
     execute = function()
 	{
         if (executeFunction != undefined)
 		{
-            return executeFunction();  // Call the function to execute the action
+            executeFunction();  // Call the function to execute the action
         }
-        return false;  // Return false if no function is set
+        
+    }
+	
+	// Ensure onEntry is only done once
+    doOnEntry = function()
+    {
+		
+		if showDebug and !onEntryDone show_debug_message($"ENTERING Action: {name}");
+        if (onEntryFunc != undefined && !onEntryDone)
+        {
+            onEntryFunc();  // Call the on entry hook function
+            onEntryDone = true;  // Set the flag to true after calling the function
+        }
+    }
+    
+    // Ensure onExit is only done once
+    doOnExit = function()
+    {
+		if showDebug and !onExitDone show_debug_message($"EXITING Action: {name}");
+        if (onExitFunc != undefined && !onExitDone)
+        {
+            onExitFunc();  // Call the on exit hook function
+            onExitDone = true;  // Set the flag to true after calling the function
+			// the flag is lwk redundant but leave it 
+        }
+    }
+    
+    // Reset the flags when the action is completed or needs to reset
+    reset = function()
+    {
+        onEntryDone = false;
+        onExitDone = false;
     }
 	
 }
@@ -698,18 +850,18 @@ brain.registerSensor("hasAxe", function() { return true; });
 brain.registerSensor("hasWood", function() { return false; });
 brain.registerSensor("hasFire", function() { return false; });
 
-for the sensors you need to make them return true or false
+//for the sensors you need to make them return true or false
 
-example:
-function hasWood()
-{
-	if inventoryHas("wood")
-	{
-		return true;
-	} else {
-		return false;
-	}
-}
+//example:
+//function hasWood()
+//{
+//	if inventoryHas("wood")
+//	{
+//		return true;
+//	} else {
+//		return false;
+//	}
+//}
 
 
 
@@ -735,5 +887,4 @@ brain.executePlan();
 
 
 */
-
 
