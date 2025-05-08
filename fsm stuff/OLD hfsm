@@ -1,0 +1,842 @@
+
+
+
+function HierarchicalFiniteStateMachine(_name) constructor
+{
+	name = _name;
+	states = [];
+	events = [];
+	transitions = [];
+	//transitionMap = {}; // O(1) for lookups
+	
+	previousState = undefined;
+	initialState = undefined;
+    currentState = undefined;
+    exitCallback = undefined;
+	
+    exitState = new exitStateHFSM(); 
+    exited = true;
+	
+	showDebug = true;
+	
+	#region		<Start, Stop, Run HFSM>
+	
+	/**
+	 * Initializes and starts the state machine
+	 * @param {object} _data - Optional data to pass to initial state's start callback
+	 */
+    start = function(_data={})
+    {
+        if (initialState == undefined)
+        {
+            show_debug_message("Initial state is not set.");
+            return;
+        }
+        currentState = initialState;
+        exited = false;
+        currentState.start(_data);
+		
+		// Start child FSM if current state has one
+	    if (currentState.hasChildStateMachine())
+	    {
+	        currentState.childStateMachine.start(_data);
+	    }
+		
+		if showDebug show_debug_message($"Started State Machine ({name}).");
+		
+    }
+	
+	// Processes current state's logic and child FSM if exists
+	step = function()
+	{
+	    if (currentState != undefined && currentState != exitState)
+	    {
+			
+			
+	        currentState.step();
+
+	        // If there's a child FSM, update that too
+	        if (currentState.hasChildStateMachine())
+	        {
+	            currentState.childStateMachine.step();
+	        }
+	    }
+	}
+	
+	/**
+	 * Stops the state machine and executes exit callbacks
+	 * @param {object} _data - Optional data to pass to current state's stop callback
+	 */
+	stop = function(_data={})
+    {
+        if (initialState == undefined)
+        {
+            show_debug_message("Initial state is not set");
+            return;
+        }
+        if (currentState == undefined)
+        {
+            show_debug_message($"HFSM [{name}] has not been started");
+            return;
+        }
+        currentState.stop(_data);
+        currentState = exitState;
+        exited = true;
+		
+		// Stop child FSM if current state has one
+	    if (currentState.hasChildStateMachine())
+	    {
+	        currentState.childStateMachine.stop(_data);
+	    }
+		
+		if showDebug show_debug_message($"Stopped State Machine ({name}).");
+    }
+	
+	/**
+	 * Adds a state to the state machine
+	 * @param {stateHFSM} _state - State object to add
+	 * @param {boolean} _initialState - Whether this should be initial state
+	 */
+	addState = function(_state, _initialState = false)
+    {
+		
+		
+		
+        if (array_get_index(states, _state) != -1)
+        {
+            show_debug_message("Attempting to add same state twice.");
+            return;
+        }
+
+        array_push(states, _state);
+		
+        _state.setParentStateMachine(self);
+		
+		if showDebug show_debug_message($"Added [{_state}] to (HFSM: {name}).");
+        
+        if (_initialState && initialState == undefined)
+        {
+			
+            initialState = _state;
+			
+			if showDebug show_debug_message($"Initial State {initialState} set for {name}.");
+        }
+    }
+	
+	getCurrentState = function()
+	{
+		return currentState;
+	}
+	
+	getCurrentStateName = function()
+	{
+		return currentState.name;
+	}
+	
+	inState = function(_stateName)
+	{
+		
+		if currentState == undefined
+		{
+			//if showDebug show_debug_message($"Current State is undefined for {name}.");
+			return false;
+		}
+		
+		
+		var _val = (currentState.name == _stateName);
+		return _val;
+	}
+	
+	/**
+	 * Bulk-adds states from an array
+	 * @param {array} _states - Array of stateHFSM objects
+	 */
+	addStatesByArray = function(_states)
+	{
+		for(var i=0; i < array_length(_states); i++)
+		{
+			var _state = _states[i];
+			
+			addState(_state);
+		}
+	}
+	
+	/**
+	 * Reverts to previous state if available
+	 * @param {object} _data - Optional data for state transition
+	 */
+	revertToPreviousState = function(_data={})
+	{
+	    if (previousState != undefined && currentState != previousState)
+	    {
+	        var temp = currentState;
+	        currentState.stop(_data);
+	        currentState = previousState;
+	        currentState.start(_data);
+	        previousState = temp; // Optional: enables toggle back-and-forth
+	    }
+	    else if showDebug {
+	        show_debug_message("No previous state to revert to.");
+	    }
+	}
+
+	#endregion
+	
+	
+	#region		<Transition Stuff>
+	
+	
+	/**
+	 * @function Creates bidirectional transitions between two states
+	 * @param {stateHFSM} _stateA - First state
+	 * @param {stateHFSM} _stateB - Second state
+	 * @param {eventHFSM} _eventAtoB - Transition event from A to B
+	 * @param {eventHFSM} _eventBtoA - Transition event from B to A
+	 * @return {object} Object containing both transition references
+	 */
+	addTwoWayTransition = function(_stateA, _stateB, _eventAtoB, _eventBtoA)
+	{
+	    var t1 = addTransition(_stateA, _stateB, _eventAtoB);
+	    var t2 = addTransition(_stateB, _stateA, _eventBtoA);
+		
+		//if (t1 == undefined) or (t2 == undefined) return undefined;
+		
+	    return {t1: t1, t2: t2};
+	}
+	
+	/**
+	 * Adds multiple transitions from one source state
+	 * @param {stateHFSM} _source - Source state
+	 * @param {array} _eventStatePairs - Array of {event, state} objects
+	 */
+	addTransitionsFromSource = function(_source, _eventStatePairs)
+	{
+	    for (var i = 0; i < array_length(_eventStatePairs); i++)
+	    {
+	        var pair = _eventStatePairs[i];
+	        addTransition(_source, pair.state, pair.event);
+	    }
+	}
+
+
+	/**
+	 * Adds multiple transitions to one destination state
+	 * @param {stateHFSM} _destination - Target state
+	 * @param {array} _eventStatePairs - Array of {event, state} objects
+	 */
+	addTransitionsToDestination = function(_destination, _eventStatePairs)
+	{
+	    for (var i = 0; i < array_length(_eventStatePairs); i++)
+	    {
+	        var pair = _eventStatePairs[i];
+	        addTransition(pair.state, _destination, pair.event);
+	    }
+	}
+	
+	
+	/**
+	 * Core transition creation between states
+	 * @param {stateHFSM} _src - Source state
+	 * @param {stateHFSM} _dst - Destination state
+	 * @param {eventHFSM} _evt - Trigger event
+	 * @return {transitionHFSM|undefined} Created transition or undefined if invalid
+	 */
+	addTransition = function(_src, _dst, _evt)
+    {
+        if (array_get_index(states, _src) != -1 && array_get_index(states, _dst) != -1 && array_get_index(events, _evt) != -1)
+        {
+            var transition = new normalTransitionHFSM(_evt, _src, _dst);
+            array_push(transitions, transition);
+			
+			if showDebug show_debug_message($"Added {transition}");
+			
+            return transition;
+        }
+        return undefined;
+    }
+
+    /**
+	 * Creates a self-transition (state -> itself)
+	 * @param {stateHFSM} _state - State to transition from/to
+	 * @param {eventHFSM} _evt - Trigger event
+	 * @return {transitionHFSM|undefined} Created transition or undefined if invalid
+	 */
+    addSelfTransition = function(_state, _evt)
+    {
+        if (array_get_index(states, _state) != -1 && array_get_index(events, _evt) != -1)
+        {
+            var transition = new selfTransitionHFSM(_evt, _state, _state);
+            array_push(transitions, transition);
+            return transition;
+        }
+        return undefined;
+    }
+
+    /**
+	 * Creates a null transition (no state change)
+	 * @param {stateHFSM} _state - State to trigger from
+	 * @param {eventHFSM} _evt - Trigger event
+	 * @return {transitionHFSM|undefined} Created transition or undefined if invalid
+	 */
+    addNullTransition = function(_state, _evt)
+    {
+        if (array_get_index(states, _state) != -1 && array_get_index(events, _evt) != -1)
+        {
+            var transition = new nullTransitionHFSM(_evt, _state, _state);
+            array_push(transitions, transition);
+            return transition;
+        }
+        return undefined;
+    }
+	
+	#endregion
+	
+	
+	#region		<Event Stuff>
+	
+	/**
+	 * Registers an event in the FSM
+	 * @param {eventHFSM} _event - Event object to add
+	 */
+	addEvent = function(_event)
+    {
+        array_push(events, _event);
+		if showDebug show_debug_message($"Added [{_event}] to (HFSM: {name})");
+    }
+	
+	/**
+	 * Bulk-adds events from array
+	 * @param {array} _events - Array of eventHFSM objects
+	 */
+	addEventsByArray = function(_events)
+	{
+		for(var i=0; i<array_length(_events); i++)
+		{
+			var _event = _events[i];
+			
+			addEvent(_event);
+		}
+	}
+	
+	/**
+	 * Triggers event on key press
+	 * @param {number} _key - Keyboard constant (e.g. ord("A"))
+	 * @param {eventHFSM} _evt - Event to trigger
+	 * @param {object} _data - Optional transition data
+	 * @param {boolean} _propagate - Whether to propagate to child FSM
+	 */
+	triggerEventByKeypress = function(_key, _evt, _propagate = false, _data = undefined)
+	{
+		
+		if keyboard_check_pressed(_key)
+		{
+			triggerEvent(_evt, _propagate, _data);
+		}
+	}
+	
+	
+	// add O(1) lookups for speed
+	
+	/**
+	 * Attempts to trigger a state transition
+	 * @param {eventHFSM} _evt - Event to trigger
+	 * @param {object} _data - Optional transition data
+	 * @param {boolean} _propagate - Whether to propagate to child FSM
+	 */
+	triggerEvent = function(_evt, _propagate = false, _data = undefined)
+	{
+	    if (!validateFSMReady()) return;
+    
+	    if (_propagate && currentState.hasChildStateMachine())
+		{
+	        propagateToChild(_evt, _data);
+	        return;
+	    }
+    
+	    attemptTransition(_evt, _data);
+	}
+
+	//helper functions for trigger event
+	validateFSMReady = function()
+	{
+	    if (initialState == undefined)
+		{
+	        if (showDebug) show_debug_message("Initial state is not set");
+	        return false;
+	    }
+	    if (currentState == undefined)
+		{
+	        if (showDebug) show_debug_message($"[HFSM: {name}] has not been started");
+	        return false;
+	    }
+	    return true;
+	}
+
+	propagateToChild = function(_evt, _data)
+	{
+	    if (showDebug) show_debug_message($"Propagating [{_evt}] from [HFSM: {name}]");
+	    currentState.childStateMachine.triggerEvent(_evt, true, _data);
+	}
+
+	executeTransition = function(_transition, _data)
+	{
+		previousState = currentState; 
+	    currentState = _transition.destinationState;
+	    _transition.perform(_data);
+    
+	    if (is_instanceof(currentState, exitStateHFSM) && exitCallback && !exited)
+		{
+	        exited = true;
+	        exitCallback(currentState, _data);
+	    }
+	}
+
+	findValidTransition = function(_evt)
+	{
+	    for (var i = 0; i < array_length(transitions); i++)
+		{
+	        var t = transitions[i];
+	        if (t.sourceState == currentState && t.event == _evt)
+			{
+	            return t;
+	        }
+	    }
+	    return undefined;
+	}
+
+	attemptTransition = function(_evt, _data)
+	{
+	    var transition = findValidTransition(_evt);
+	    if (transition != undefined)
+		{
+	        executeTransition(transition, _data);
+	    } else {
+	        
+			if (showDebug)
+			{
+		        //show_debug_message($"[{_evt}] is not valid in state [{currentState}]");
+		        //show_debug_message($"Might be no transition to [{currentState}] via [{_evt}]");
+		    }
+			
+	    }
+	}
+	
+	#endregion
+	
+	
+	#region		<Helper Functions>
+	
+	isRunning = function()
+    {
+        return currentState != undefined && currentState != exitState;
+    }
+	
+	
+	setExitCallback = function(_callback)
+	{
+		exitCallback = _callback;
+	}
+	
+	
+	print = function(_indent = 0, _fromState = "")
+	{
+	    var indentStr = string_repeat("  ", _indent);
+
+	    // Label with optional parent state
+	    var header = "HFSM: " + name;
+	    if (_fromState != "") {
+	        header += " (from state: " + _fromState + ")";
+	    }
+
+	    // Header
+	    show_debug_message("");
+	    show_debug_message(indentStr + header);
+	    show_debug_message(indentStr + string_repeat("=", 22));
+
+	    // States
+	    show_debug_message(indentStr + "States:");
+	    for (var i = 0; i < array_length(states); i++) {
+	        var state = states[i];
+	        var label = "- " + string(state.name);
+	        if (state.hasChildStateMachine()) {
+	            label += "  ➜ [Child FSM: " + state.childStateMachine.name + "]";
+	        }
+	        show_debug_message(indentStr + label);
+	    }
+
+	    // Events
+	    show_debug_message("");
+	    show_debug_message(indentStr + "Events:");
+	    if (array_length(events) > 0) {
+	        for (var i = 0; i < array_length(events); i++) {
+	            var evt = events[i];
+	            show_debug_message(indentStr + "- " + string(evt.name));
+	        }
+	    } else {
+	        show_debug_message(indentStr + "(None)");
+	    }
+
+	    // Transitions
+	    show_debug_message("");
+	    show_debug_message(indentStr + "Transitions:");
+	    if (array_length(transitions) > 0) {
+	        for (var i = 0; i < array_length(transitions); i++) {
+	            var trans = transitions[i];
+	            show_debug_message(indentStr + "[" + string(trans.sourceState.name) + "] --(" + string(trans.event.name) + ")--> [" + string(trans.destinationState.name) + "]");
+	        }
+	    } else {
+	        show_debug_message(indentStr + "(None)");
+	    }
+
+	    // Divider
+	    show_debug_message("");
+	    show_debug_message(indentStr + string_repeat("-", 22));
+
+	    // Recurse into child FSMs
+	    for (var i = 0; i < array_length(states); i++) {
+	        var state = states[i];
+	        if (state.hasChildStateMachine()) {
+	            state.childStateMachine.print(_indent, state.name);
+	        }
+	    }
+	}
+
+	toString = function()
+	{
+		return $"HFSM {name}";
+	}
+	
+	#endregion
+	
+}
+
+
+function stateHFSM(_name, _childStateMachine=undefined) constructor
+{
+	
+	name = _name;
+	
+	entryCallBacks = [];
+	stepCallBack = undefined;
+	exitCallBacks = [];
+	
+	childStateMachine = _childStateMachine;
+	parentStateMachine = undefined;
+	
+	showDebug = true;
+	
+	
+	#region		<Setup Callback Stuff>
+	
+	addEntryCallBack = function(_callback)
+	{
+		array_push(entryCallBacks, _callback);
+	}
+	
+	addExitCallBack = function(_callback)
+	{
+		array_push(exitCallBacks, _callback);
+	}
+	
+	setStepCallBack = function(_callback)
+	{
+		stepCallBack = _callback;
+	}
+	
+	#endregion
+	
+	
+	#region		<Inheritance Stuff>
+	
+	setChildStateMachine = function(_stateMachine)
+	{
+		if (!is_instanceof(_stateMachine, HierarchicalFiniteStateMachine))
+		{
+			if showDebug show_debug_message("Child must be a HFSM constructor");
+			return;
+		}
+		
+		if (parentStateMachine == _stateMachine)
+		{
+			if showDebug show_debug_message("State cannot have its own parent as a child.");
+			return;
+		}
+		
+		childStateMachine = _stateMachine;
+		
+		if showDebug show_debug_message($"Set child State Machine: [{_stateMachine}]");
+		
+	}
+	
+	hasChildStateMachine = function()
+	{
+		return (childStateMachine != undefined);
+	}
+	
+	setParentStateMachine = function(_stateMachine)
+	{
+		if (!is_instanceof(_stateMachine, HierarchicalFiniteStateMachine))
+		{
+			if showDebug show_debug_message("Parent must be a HFSM constructor");
+			return;
+		}
+		
+		if (childStateMachine == _stateMachine)
+		{
+			if showDebug show_debug_message("State cannot have its own child as a parent.");
+			return;
+		}
+		//is_instanceof(HierarchicalFiniteStateMachine, )
+		parentStateMachine = _stateMachine;
+		
+	}
+	
+	hasParentStateMachine = function()
+	{
+		return (parentStateMachine != undefined);
+	}
+	
+	#endregion
+	
+	
+	#region		<Start, Stop, Run State>
+	
+	start = function(_data={})
+	{
+		// Call all entry callbacks
+	    for (var i = 0; i < array_length(entryCallBacks); ++i)
+	    {
+	        var callback = entryCallBacks[i];
+	        if (is_callable(callback))
+	        {
+	            callback(_data); // Pass data into callback
+	        }
+	    }
+    
+	    // Start child state machine if exists
+	    if (hasChildStateMachine())
+	    {
+	        childStateMachine.start(_data);
+	    }
+		
+	}
+	
+	step = function()
+	{
+		if stepCallBack != undefined
+		{
+			//show_debug_message($"Running State: {name}");
+			stepCallBack();
+		}
+	}
+	
+	stop = function(_data={})
+	{
+	    // Call all exit callbacks
+	    for (var i = 0; i < array_length(exitCallBacks); ++i)
+	    {
+	        var callback = exitCallBacks[i];
+	        if (is_callable(callback))
+	        {
+	            callback(_data); // Pass data into callback
+	        }
+	    }
+    
+	    // Stop child state machine if exists
+	    if (hasChildStateMachine())
+	    {
+	        childStateMachine.stop(_data);
+	    }
+	}
+	
+	#endregion
+	
+	
+	#region		<Helper Functions>
+	
+	toString = function()
+	{
+		var _str = $"State: {name}";
+		return _str;
+	}
+	
+	#endregion
+	
+}
+
+
+function exitStateHFSM(_name="ExitState") : stateHFSM(_name) constructor
+{
+	status = "Normal";
+	
+	addExitCallBack(function(_data)
+    {
+        show_debug_message("Exiting state: " + _name);
+    });
+}
+
+
+function eventHFSM(_name) constructor
+{
+	name = _name;
+	
+	
+	toString = function()
+	{
+		var _str = $"Event: {name}";
+		return _str;
+	}
+}
+
+#region		<Transition Constructor Stuff>
+
+function transitionHFSM(_event, _srcState, _destState) constructor
+{
+	event = _event;
+	sourceState = _srcState;
+	destinationState = _destState;
+	
+	condition = undefined;
+	action = undefined;
+	
+	showDebug = false;
+	
+	setAction = function(_callbackAction)
+	{
+		if !is_callable(_callbackAction)
+		{
+			show_debug_message("Cannot call the Action Function.");
+			return;
+		}
+		
+		action = _callbackAction;
+	}
+	
+	setCondtion = function(_callbackCondition)
+	{
+		if !is_callable(_callbackCondition)
+		{
+			show_debug_message("Cannot call the Condition Function.");
+			return;
+		}
+		
+		condition = _callbackCondition;
+	}
+	
+	
+	toString = function()
+	{
+		var _str = $"Transition From: [{sourceState}] To: [{destinationState}]";
+		return _str;
+	}
+	
+	perform = function(_data={})
+    {
+        // By default Transition doesn't define what perform does
+        show_debug_message("Transition perform not implemented!");
+    }
+	
+}
+
+function normalTransitionHFSM(_event, _srcState, _destState) : transitionHFSM(_event, _srcState, _destState) constructor
+{
+	perform = function(_data={})
+	{
+		// If there is no condition OR the condition returns true
+	    if (condition == undefined || condition(_data))
+	    {
+			if showDebug show_debug_message($"NormalTransition from [{sourceState}] to [{destinationState}] caused by [{event}]");
+			
+			// Call action callback if set
+	        if (action != undefined)
+	        {
+	            action(_data);
+	        }
+
+	        // Transition states
+	        sourceState.stop(_data);
+	        destinationState.start(_data);
+			
+		}
+		
+		
+		
+	}
+}
+
+function selfTransitionHFSM(_event, _srcState, _destState) : transitionHFSM(_event, _srcState, _destState) constructor
+{
+	
+	//destinationState = _srcState; // same state
+	
+	perform = function(_data={})
+	{
+		// If there is no condition OR the condition returns true
+	    if (condition == undefined || condition(_data))
+	    {
+			if showDebug show_debug_message($"NormalTransition from {sourceState} to {destinationState} caused by {event}");
+			
+			// Call action callback if set
+	        if (action != undefined)
+	        {
+	            action(_data);
+	        }
+
+	        // Transition states
+	        sourceState.stop(_data);
+	        destinationState.start(_data);
+			
+		}
+		
+	}
+	
+	
+}
+
+function nullTransitionHFSM(_event, _srcState, _destState) : transitionHFSM(_event, _srcState, _destState) constructor
+{
+	//destinationState = _srcState; // same state
+	
+	perform = function(_data={})
+	{
+		// If there is no condition OR the condition returns true
+	    if (condition == undefined || condition(_data))
+	    {
+			if showDebug show_debug_message($"nullTransition from {sourceState} to {destinationState} caused by {event}");
+			
+			// Call action callback if set
+	        if (action != undefined)
+	        {
+	            action(_data);
+	        }
+
+	        // Transition states
+	        //sourceState.stop(_data);
+	        //destinationState.start(_data);
+			
+		}
+		
+	}
+}
+
+#endregion
+
+
+#region		<Helper Functions>
+
+
+function createSubFSMState(_name, _parent_fsm, _child_fsm=undefined)
+{
+	var state = new stateHFSM(_name, _child_fsm);
+	state.setParentStateMachine(_parent_fsm);
+	return state;
+}
+
+// Helper function
+function TransitionDATA(event, state)
+{
+    return { event: event, state: state };
+}
+
+
+#endregion
