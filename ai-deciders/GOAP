@@ -16,20 +16,6 @@
 // Ended 9:00 PM on April 25, 2025
 
 
-function generateUUID(_len)
-{
-	var _combo = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
-	var _str_len = string_length(_combo);
-	var _final_str = "";
-	
-	repeat(_len)
-	{
-		_final_str += string_char_at(_combo, irandom(_str_len));
-	}
-	
-	return _final_str;
-}
-
 function brainGOAP() constructor
 {
 	randomize();
@@ -39,6 +25,8 @@ function brainGOAP() constructor
 	sensors = {};
 	
 	targetGoal = undefined;
+	
+	Log = new Logger("GOAP Brain", true, [LogLevel.info]);
 	
 	planner = new plannerGOAP(); 
 	plan = [];
@@ -184,7 +172,7 @@ function brainGOAP() constructor
 	{
 	    var _startTime = current_time;
     
-	    if (showExtraDebug) planner.printLog();
+	    //if (showExtraDebug) planner.printLog();
 
 	    var current_state = captureSnapshot();
 	    var goal_state = targetGoal.conditions;
@@ -197,7 +185,10 @@ function brainGOAP() constructor
 
 	    if (!plan_valid)
 	    {
-	        if (showDebug) show_debug_message("No valid plan could be generated.");
+	        //if (showDebug) show_debug_message("No valid plan could be generated.");
+			
+			Log.logDebug("No valid plan could be generated.");
+			
 	        return false;
 	    }
 
@@ -206,9 +197,7 @@ function brainGOAP() constructor
 	    var _endTime = (current_time - _startTime);
 		
 		
-		
-	    if (showDebug) show_debug_message($"New plan generated in ({string_format(_endTime, 0, 2)} ms) successfully.");
-
+		Log.logDebug($"New plan generated in ({string_format(_endTime, 0, 2)} ms) successfully.");
 
 	    return true;
 	}
@@ -319,14 +308,16 @@ function brainGOAP() constructor
 
 	handleActionInterruption = function(_act)
 	{
-	    if (showDebug) show_debug_message("Regenerating Plan: Preconditions no longer valid for (Interrupting) " + plan[currentActionIndex]);
-
+	    //if (showDebug) show_debug_message("Regenerating Plan: Preconditions no longer valid (Interrupting) " + plan[currentActionIndex]);
+		
+		Log.logWarning($"Regenerating Plan: Preconditions no longer valid (Interrupting) {plan[currentActionIndex]}");
+		
 	    // Standard GOAP interruption sequence
 	    _act.doOnExit();  // Clean up the interrupted action
 	    _act.reset();     // Reset internal state (timers, etc.)
     
 	    generatePlan();   // Generate new plan
-	    fsm.setState("idle");  // Transition out of executing
+	    fsm.setState("start");  // Transition out of executing
 	}
 
 	isActionComplete = function(_act)
@@ -341,7 +332,9 @@ function brainGOAP() constructor
 
 	handleActionCompletion = function(_act)
 	{
-	    if (showDebug) show_debug_message("Action completed successfully: " + plan[currentActionIndex]);
+	    //if (showDebug) show_debug_message("Action completed successfully: " + plan[currentActionIndex]);
+
+		Log.logInfo($"Action completed successfully: {plan[currentActionIndex]}");
 
 	    // Final cleanup for completed action
 	    _act.doOnExit();
@@ -373,7 +366,8 @@ function brainGOAP() constructor
 
 	handleActionFailure = function(_act)
 	{
-	    if (showDebug) show_debug_message("Committed action finished animation but failed objective: " + plan[currentActionIndex]);
+	    
+		Log.logDebug($"Committed action - but failed: {plan[currentActionIndex]}");
 
 	    // Cleanup for failed committed action
 	    _act.doOnExit();
@@ -381,7 +375,7 @@ function brainGOAP() constructor
     
 	    // Replan since the goal wasn't met
 	    generatePlan();
-	    fsm.setState("idle");  // Transition out of executing after failure
+	    fsm.setState("start");  // Transition out of executing after failure
 	}
 	
 	#endregion
@@ -392,27 +386,31 @@ function brainGOAP() constructor
 	#region		<Planner FSM>
 	
 	fsm = new fsmSYS("GOAP Planner State");
-	var _idle_state = new state_fsmSYS("idle");
+	var _start_state = new state_fsmSYS("start");
 	var _executing_state = new state_fsmSYS("executing");
 	var _finished_state = new state_fsmSYS("finished");
 	
-	fsmShowDebug = false;
+	fsmLog = new Logger("GOAP Planner fsm", false);
 	
-	_idle_state.setOnUpdateCallback(function()
+	
+	_start_state.setOnUpdateCallback(function()
 	{
-	    if (fsmShowDebug) show_debug_message("Entering idle state");
-
+		fsmLog.logDebug("Entering start state");
+		
+		
 	    // Check if the goal is already satisfied
 	    if (planner.reactionsSatisfied(targetGoal.conditions, captureSnapshot()))
 	    {
-	        if (fsmShowDebug) show_debug_message("Target goal already met. Skipping plan generation.");
+	        
+			fsmLog.logDebug("Target goal already met. Skipping plan generation.");
 	        return; // Skip plan generation if goal is already satisfied
 	    }
 
 	    // If the goal is not satisfied, generate a new plan
 	    if (array_length(plan) <= 0)
 	    {
-	        show_debug_message("No plan found — generating...");
+			fsmLog.logDebug("No plan found — generating...");
+			
 	        generatePlan();
 	        return;
 	    }
@@ -459,30 +457,31 @@ function brainGOAP() constructor
 
 	_finished_state.setOnEnterCallback(function()
 	{
-	    if (showDebug) show_debug_message("GOAP plan complete.");
-
+		fsmLog.logDebug("GOAP plan complete.");
+	
 	    // Only generate a new plan if the goal is not satisfied
 	    if (!planner.reactionsSatisfied(targetGoal.conditions, captureSnapshot()))
 	    {
 	        generatePlan(); // Only replan if the goal needs it
 	    }
 
-	    fsm.setState("idle");
+	    fsm.setState("start");
 	});
 
-	
-	fsm.addStatesByArray([_idle_state, _executing_state, _finished_state]);
-	
+	// Setup Planner FSM 
+	fsm.addStatesByArray([_start_state, _executing_state, _finished_state]);
+	fsm.setState("start");
 	
 	runPlan = function()
 	{
-		resetBrainLog(); // Reset brain log at the start of each run
-		var _startTime = current_time; // Start timing for the whole run
+		//resetBrainLog(); // Reset brain log at the start of each run
+		//var _startTime = current_time; // Start timing for the whole run
 
-		fsm.run();
+		//fsm.run();
+		fsmLog.doProfile("fsm.run",fsm.run);
 
-		brainLog.run_plan_time += (current_time - _startTime); // Accumulate time
-		if (showDebug and showExtraDebug) printBrainLog(); // Print brain log after each run
+		//brainLog.run_plan_time += (current_time - _startTime); // Accumulate time
+		//if (showDebug and showExtraDebug) printBrainLog(); // Print brain log after each run
 	}
 	
 	#endregion
@@ -491,6 +490,8 @@ function brainGOAP() constructor
 
 function plannerGOAP() constructor
 {
+	planLog = new Logger("GOAP Planner", true, [LogLevel.info]);
+	
     heuristic_cache = {};   // Cache for heuristic values
     //plan_cache = {};        // Cache for previously generated plans
 	
@@ -725,11 +726,11 @@ function plannerGOAP() constructor
 	    var key = string(state);
 	    if (struct_exists(heuristic_cache, key))
 		{
-	        //show_debug_message("Heuristic cache found.");
-			
+	        
 			var _data = struct_get(heuristic_cache, key);
 			
-			if showDebug show_debug_message($"Heuristic cache found: {heuristic_cache}");
+			planLog.logDebug($"Heuristic cache found: {heuristic_cache}");
+			
 			
 	        return _data;
 	    }
@@ -819,7 +820,7 @@ function plannerGOAP() constructor
 
 function nodeGOAP(_name) constructor
 {
-	uuid = "node_"+generateUUID(8);
+	uuid = "node_"//+generateUUID(8);
 	
 	name = _name;
 	
@@ -863,7 +864,7 @@ function nodeGOAP(_name) constructor
 
 function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 {
-	uuid = "action_"+generateUUID(9); // not needed rn
+	uuid = "action_"//+generateUUID(9); // not needed rn
 	
 	cost = _cost;
 	
@@ -953,80 +954,9 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 function goalGOAP(_name) : nodeGOAP(_name) constructor
 {
 	// you can add priorities, a lot of different things
-	uuid = "goal_"+generateUUID(9);
+	uuid = "goal_"//+generateUUID(9);
 	
 }
 
 #endregion
 
-
-/*
-
-Example Code:
-
-// GOAP BRAIN
-brain = new brainGOAP();
-
-//Actions
-var makeActionBuildFire = new actionGOAP("BuildFire", 2); 
-makeActionBuildFire.addCondition("hasWood", true);
-makeActionBuildFire.addReaction("hasFire", true);
-makeActionBuildFire.setExecuteFunction(function()
-{
-	show_debug_message("build fye.");
-	
-});
-
-var makeActionGatherWood = new actionGOAP("GatherWood", 1); 
-makeActionGatherWood.addCondition("hasAxe", true);
-makeActionGatherWood.addReaction("hasWood", true);
-makeActionGatherWood.setExecuteFunction(function()
-{
-	show_debug_message("Gather wood.");
-	
-});
-
-var makeActionWarmUp = new actionGOAP("WarmUp", 1); 
-makeActionWarmUp.addCondition("hasFire", true);
-makeActionWarmUp.addReaction("StayWarm", true);
-makeActionWarmUp.setExecuteFunction(function()
-{
-	show_debug_message("Warm up by the fye.");
-	
-});
-
-// Goals
-var makeGoalStayWarm = new goalGOAP("StayWarm");
-makeGoalStayWarm.addCondition("StayWarm", true);
-
-
-// Register sensors (these return the world state)
-brain.registerSensor("hasAxe", function() { return true; });
-brain.registerSensor("hasWood", function() { return false; });
-brain.registerSensor("hasFire", function() { return false; });
-
-//for the sensors you need to make them return true or false
-
-
-// Add actions
-brain.addAction(makeActionGatherWood);
-brain.addAction(makeActionBuildFire);
-brain.addAction(makeActionWarmUp);
-
-// Add goal
-brain.addGoal(makeGoalStayWarm);
-
-// Set target goal
-brain.setTargetGoal("StayWarm");
-
-// Create plan
-brain.generatePlan();
-
-brain.printPlan();
-
-
-// Place in Step Event 
-brain.executePlan();
-
-
-*/
