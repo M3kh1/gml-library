@@ -1,0 +1,1157 @@
+
+// When creating goap actions think:
+/*
+
+	GOAP gets you to the party.
+	The party handles itself.
+	
+	GOAP is about getting into the right context.
+
+	The agent doesn’t plan every bite of food with GOAP —
+	It just planned to get to the fridge.
+	
+*/
+
+// Started : 4:00 PM on April 25, 2025.
+// Ended 9:00 PM on April 25, 2025
+
+
+
+function brainGOAP() constructor
+{
+	randomize();
+	
+	actions = {};
+	goals = {};
+	sensors = {};
+	
+	targetGoal = undefined;
+	
+	Log = new Logger("GOAP Brain", true);
+	
+	
+	statSys = new statManagerGOAP();
+	
+	planner = new plannerGOAP(statSys); 
+	plan = [];
+	currentActionIndex = 0;  // init action index
+	
+	
+	
+	
+	// Profiling variables for brainGOAP specific functions
+	brainLog = {
+		capture_snapshot_time: 0,
+		run_plan_time: 0,
+		should_interrupt_time: 0,
+		is_action_complete_time: 0,
+		is_committed_failed_time: 0,
+	}
+	
+	
+	default_log = variable_clone(brainLog);
+	
+	resetBrainLog = function()
+	{
+		brainLog = variable_clone(default_log);
+	}
+	
+	// Print brain log
+	printBrainLog = function()
+	{
+		show_debug_message("----- Brain GOAP Log -----");
+		var _vals = struct_get_names(brainLog);
+		for(var i=0; i<array_length(_vals); i++)
+		{
+			var _name = _vals[i];
+			var _logVal = struct_get(brainLog, _name);
+			show_debug_message($"{_name}: {string_format(_logVal, 0, 5)} ms");
+		}
+		show_debug_message("--------------------------");
+	}
+	
+	#region Primary User Functions
+	
+	addAction = function(_action)
+	{
+		
+		var _name = _action.name;
+		
+		if struct_exists(actions, _name)
+		{
+			if showDebug show_debug_message($"Action ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(actions, _name, _action);
+		
+	}
+	
+	addActionsByArray = function(_actions)
+	{
+		for(var i=0; i<array_length(_actions); i++)
+		{
+			var _a = _actions[i];
+			addAction(_a);
+		}
+	}
+	
+	addGoal = function(_goal)
+	{
+		
+		var _name = _goal.name;
+		
+		if struct_exists(goals, _name)
+		{
+			if showDebug show_debug_message($"Goal ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(goals, _name, _goal);
+		
+	}
+	
+	addGoalsByArray = function(_goals)
+	{
+		for(var i=0; i<array_length(_goals); i++)
+		{
+			var _g = _goals[i];
+			addGoal(_g);
+		}
+	}
+	
+	
+	registerSensor = function(_name, _func)
+	{
+		
+		if struct_exists(sensors, _name)
+		{
+			if showDebug show_debug_message($"Sensor ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(sensors, _name, _func);
+		
+	}
+	
+	
+	getSensorData = function(_name)
+	{
+		var _sensor = struct_get(sensors, _name);
+		
+		if _sensor == undefined
+		{
+			if showDebug show_debug_message($"Sensor: {_name} DNE.");
+			return false;
+		}
+		
+		return _sensor();
+		
+	}
+	
+	
+	setTargetGoal = function(_goalName)
+	{
+		
+		//show_debug_message("Goals: "+string(goals));
+		
+		if !struct_exists(goals, _goalName)
+		{
+			if showDebug show_debug_message("Set target goal failed. Goal DNE.");
+			return;
+		}
+		
+		targetGoal = struct_get(goals, _goalName);
+		
+	}
+	
+	initPlan = function(_plan=[])
+	{
+		plan = _plan;
+		currentActionIndex = 0;
+	}
+	
+	generatePlan = function()
+	{
+	    var _startTime = current_time;
+    
+	    //if (showExtraDebug) planner.printLog();
+
+	    var current_state = captureSnapshot();
+	    var goal_state = targetGoal.conditions;
+	    var available_actions = actions;
+
+	    //if showDebug show_debug_message("Generating Plan");
+
+	    var new_plan = planner.createPlan(current_state, goal_state, available_actions);
+	    var plan_valid = (array_length(new_plan) > 0);
+
+	    if (!plan_valid)
+	    {
+	        //if (showDebug) show_debug_message("No valid plan could be generated.");
+			
+			Log.logDebug("No valid plan could be generated.");
+			
+	        return false;
+	    }
+
+	    initPlan(new_plan); // Update plan with the new one
+
+	    var _endTime = (current_time - _startTime);
+		
+		
+		Log.logDebug($"New plan generated in ({string_format(_endTime, 0, 2)} ms) successfully.");
+		
+		printPlan();
+		
+	    return true;
+	}
+
+
+
+	#endregion
+
+	#region ALL Helper Functions
+	
+	#region -- Base Helper Functions
+	
+	plansAreEqual = function(plan1, plan2)
+    {
+        // If either plan is undefined, they are not equal unless both are (handled by length check)
+        if (is_undefined(plan1) || is_undefined(plan2)) return false;
+
+        if (array_length(plan1) != array_length(plan2))
+        {
+            return false; // Plans are not equal if lengths differ
+        }
+
+        for (var i = 0; i < array_length(plan1); i++)
+        {
+            if (plan1[i] != plan2[i])
+            {
+                return false; // Plans are not equal if any action name differs at the same index
+            }
+        }
+
+        return true; // Plans are equal if lengths and all action names match
+    }
+	
+	captureSnapshot = function()
+	{
+		var _startTime = current_time;
+		var _snap = {};
+		
+		var _sensor_names = struct_get_names(sensors);
+		
+		for(var i=0; i<array_length(_sensor_names); i++)
+		{
+			var _name = _sensor_names[i];
+			
+			var _val = struct_get(sensors, _name);
+			
+			var _funct_ran = _val();
+			
+			struct_set(_snap, _name, _funct_ran);
+		}
+		
+		
+		brainLog.capture_snapshot_time += (current_time - _startTime); // Accumulate time
+		return _snap;
+		
+	}
+
+	printPlan = function()
+	{
+		var _len = array_length(plan);
+		
+		if (_len <= 0)
+		{
+			show_debug_message("Print Plan - Plan is empty.");
+			return;
+		}
+		
+		show_debug_message($"({_len}) ~ Printing Plan:");
+		
+		//show_debug_message(string(plan));
+		
+		for(var a=0; a<_len; a++)
+		{
+			
+			var _act = plan[a];
+			show_debug_message($"{a+1}: {_act}");
+			
+		}
+		
+	}
+	
+	drawSensors = function(_x, _y)
+	{
+		var _sensor_names = struct_get_names(sensors);
+		
+		for(var i=0; i<array_length(_sensor_names); i++)
+		{
+			var _sensor = _sensor_names[i];
+			var _val = struct_get(sensors, _sensor);
+			
+			draw_text(_x, (_y-(20*i)), $"Sensor: {_sensor} ~ {_val()}");
+			
+		}
+		
+	}
+	
+	#endregion
+	
+	#region --- FSM Helper Functions ---
+	
+	shouldInterruptAction = function(_act)
+	{
+		var _startTime = current_time; // Start timing
+		
+		var _result = !planner.preconditionsMet(_act.conditions, captureSnapshot()) && _act.isInterruptible;
+		
+		brainLog.should_interrupt_time += (current_time - _startTime); // Accumulate time
+		return _result;
+	}
+
+	handleActionInterruption = function(_act)
+	{
+	    
+		Log.logWarning($"Regenerating Plan: Preconditions no longer valid (Interrupting) {plan[currentActionIndex]}");
+		
+	    // Standard GOAP interruption sequence
+	    _act.doOnExit();  // Clean up the interrupted action
+	    _act.reset();     // Reset internal state (timers, etc.)
+    
+	    generatePlan();   // Generate new plan
+	    fsm.setState("start");  // Transition out of executing
+	}
+
+	isActionComplete = function(_act)
+	{
+		
+	    var _startTime = current_time; // Start timing
+		
+		var _goapReactionsMet = planner.reactionsSatisfied(_act.reactions, captureSnapshot());
+		
+		brainLog.is_action_complete_time += (current_time - _startTime); // Accumulate time
+		
+		if (!_goapReactionsMet)
+		{
+	        //Log.logWarning($"Action '{_act.name}' not completed. Reactions not met.");
+	    }
+		
+		return _goapReactionsMet; // Action is complete if reactions are met
+		
+	}
+
+	handleActionCompletion = function(_act)
+	{
+		Log.logInfo($"Action completed successfully: {plan[currentActionIndex]}");
+
+	    // Final cleanup for completed action
+	    _act.doOnExit();
+	    _act.reset();
+    
+	    // Move to the next action or finish the plan
+	    currentActionIndex++;
+	    if (currentActionIndex >= array_length(plan))
+	    {
+	        fsm.setState("finished");  // Plan complete
+	    }
+	    else
+	    {
+	        var _nextActionName = plan[currentActionIndex];
+		    if (struct_exists(actions, _nextActionName))
+		    {
+		        var _nextAct = struct_get(actions, _nextActionName);
+		        _nextAct.doOnEntry();
+		        fsm.setState("executing");
+		    }
+		    else
+		    {
+		        Log.logError("Next action '" + string(_nextActionName) + "' is undefined or missing in the action list!");
+		        fsm.setState("finished"); // Prevent hanging
+		    }
+	    }
+	}
+
+	isCommittedActionFailed = function(_act)
+	{
+		
+	    var _startTime = current_time; // Start timing
+		
+		var _goapReactionsMet = planner.reactionsSatisfied(_act.reactions, captureSnapshot());
+		
+		brainLog.is_committed_failed_time += (current_time - _startTime); // Accumulate time
+		
+		return _act.isInterruptible && !_goapReactionsMet && !_act.isRunning(); // Check if action is committed and failed
+		
+	}
+
+	handleActionFailure = function(_act)
+	{
+	    
+		Log.logWarning($"Failed to execute action: {plan[currentActionIndex]}");
+
+	    // Cleanup for failed committed action
+	    _act.doOnExit();
+	    _act.reset();
+    
+	    // Replan since the goal wasn't met
+	    generatePlan();
+	    fsm.setState("start");  // Transition out of executing after failure
+	}
+	
+	#endregion
+	
+	#endregion
+	
+	
+	#region		<Planner FSM>
+	
+	fsm = new fsmSYS("GOAP Planner State");
+	var _start_state = new state_fsmSYS("start");
+	var _executing_state = new state_fsmSYS("executing");
+	var _finished_state = new state_fsmSYS("finished");
+	
+	fsmLog = new Logger("GOAP Planner fsm", false);
+	
+	
+	_start_state.setOnUpdateCallback(function()
+	{
+		fsmLog.logDebug("Entering start state");
+		
+		
+	    // Check if the goal is already satisfied
+	    if (planner.reactionsSatisfied(targetGoal.conditions, captureSnapshot()))
+	    {
+	        
+			fsmLog.logDebug("Target goal already met. Skipping plan generation.");
+	        return; // Skip plan generation if goal is already satisfied
+	    }
+
+	    // If the goal is not satisfied, generate a new plan
+	    if (array_length(plan) <= 0)
+	    {
+			fsmLog.logDebug("No plan found — generating...");
+			
+	        generatePlan();
+	        return;
+	    }
+
+	    currentActionIndex = 0;
+	    var _act = struct_get(actions, plan[currentActionIndex]);
+	    _act.doOnEntry();
+
+	    fsm.setState("executing");
+	});
+
+
+	_executing_state.setOnUpdateCallback(function()
+	{
+	    var _act = struct_get(actions, plan[currentActionIndex]);
+
+	    // --- Check for Immediate Interruption ---
+	    if (shouldInterruptAction(_act))
+	    {
+	        handleActionInterruption(_act);
+	        return; // Action interrupted, exit update callback
+	    }
+		
+	    // --- If Not Interrupted, Execute Action Step ---
+	    _act.execute();
+
+	    // --- Check for Completion After Execution ---
+	    if (isActionComplete(_act))
+	    {
+	        handleActionCompletion(_act);
+	        return; // Action completed, exit update callback
+	    }
+
+	    // --- Handle Committed Actions that Fail Objective ---
+	    if (isCommittedActionFailed(_act))
+	    {
+	        handleActionFailure(_act);
+	        return; // Action failed, exit update callback
+	    }
+
+	    // If none of the above, the action is still running, waiting for completion.
+	});
+
+
+	_finished_state.setOnEnterCallback(function()
+	{
+		fsmLog.logDebug("GOAP plan complete.");
+	
+	    // Only generate a new plan if the goal is not satisfied
+	    if (!planner.reactionsSatisfied(targetGoal.conditions, captureSnapshot()))
+	    {
+	        generatePlan(); // Only replan if the goal needs it
+	    }
+
+	    fsm.setState("start");
+	});
+
+	// Setup Planner FSM 
+	fsm.addStatesByArray([_start_state, _executing_state, _finished_state]);
+	fsm.setState("start");
+	
+	runPlan = function()
+	{
+		//resetBrainLog(); // Reset brain log at the start of each run
+		//var _startTime = current_time; // Start timing for the whole run
+
+		//fsm.run();
+		fsmLog.doProfile("fsm.run",fsm.run);
+
+		//brainLog.run_plan_time += (current_time - _startTime); // Accumulate time
+		//if (showDebug and showExtraDebug) printBrainLog(); // Print brain log after each run
+	}
+	
+	#endregion
+	
+}
+
+
+function plannerGOAP(_statSys) constructor
+{
+	planLog = new Logger("GOAP Planner", true, [LogLevel.info]);
+	
+    heuristic_cache = {};   // Cache for heuristic values
+    
+	//plan_cache = {};        // Cache for previously generated plans
+	
+	statSys = _statSys;
+	
+    nextID = 1;
+	
+	showDebug = false;
+	
+	astarLog = {
+	    nodes_opened: 0,
+	    nodes_failed: 0,
+	    nodes_processed: 0,
+	    actions_evaluated: 0,
+		time_took: 0
+	}
+	
+	default_log = variable_clone(astarLog);
+	
+	resetLog = function()
+	{
+		astarLog = variable_clone(default_log);
+		
+		//show_debug_message("Restarting A* Log");
+	}
+	
+	printLog = function()
+	{
+		show_debug_message("--------------------------");
+		show_debug_message($"Log: {astarLog}");
+		show_debug_message("----- A* Log of DATA -----");
+		
+		var _vals = struct_get_names(astarLog);
+		
+		for(var i=0; i<array_length(_vals); i++)
+		{
+			var _name = _vals[i];
+			var _logVal = struct_get(astarLog, _name);
+			
+			if string(_name) == "time_took" _logVal = string_format(_logVal, 0, 5);
+			
+			show_debug_message($"{_name}: {_logVal}");
+		}
+		show_debug_message("--------------------------");
+	}
+
+	
+	#region Primary Helper Functions
+
+
+    heuristicScore = function(_state, _goal)
+	{
+        var error = 0;
+        var keys = struct_get_names(_goal);
+        for (var i = 0; i < array_length(keys); i++)
+		{
+            var key = keys[i];
+            if (!hasMatchingKey(_state, _goal, key)) error++;
+
+        }
+        return error;
+    }
+
+    preconditionsMet = function(_conds, _state)
+	{
+        var _keys = struct_get_names(_conds);
+        for (var i = 0; i < array_length(_keys); i++)
+		{
+            var key = _keys[i];
+			if (!hasMatchingKey(_state, _conds, key)) return false
+
+        }
+        return true;
+    }
+
+	reactionsSatisfied = function(_effects, _state)
+	{
+	    var _keys = struct_get_names(_effects);
+	    for (var i = 0; i < array_length(_keys); i++)
+	    {
+	        var key = _keys[i];
+	        if (!struct_exists(_state, key) || _state[$ key] != _effects[$ key])
+	        {
+	            return false;
+	        }
+	    }
+	    return true;
+	}
+
+
+    statesEqual = function(_a, _b)
+	{
+        var keys = struct_get_names(_b);
+        for (var i = 0; i < array_length(keys); i++)
+		{
+            var key = keys[i];
+            if (!struct_exists(_a, key) || _a[$ key] != _b[$ key])
+			{
+                return false;
+            }
+        }
+        return true;
+    }
+
+
+    reconstructPath = function(_node)
+	{
+        var path = [];
+        while (_node.parent != undefined)
+		{
+            array_insert(path, 0, _node);
+            _node = _node.parent;
+        }
+        return path;
+    }
+	
+	
+	getActionsForGoal = function(goal_node)
+	{
+	    var actions = [];
+
+	    // Start from the goal node and walk back through parents
+	    var current = goal_node;
+	    while (current != undefined && current.parent != undefined)
+		{
+	        array_push(actions, current.action); // Collect the action at this node
+	        current = current.parent; // Move to the parent node
+	    }
+
+	    // The actions are collected in reverse order, so reverse them for correct sequence
+	    actions = array_reverse(actions);
+
+	    return actions;
+	}
+
+
+	#endregion
+	
+	
+	#region Secondary Helper Functions
+	
+	hasMatchingKey = function(_a, _b, key)
+	{
+	    return struct_exists(_a, key) && _a[$ key] == _b[$ key];
+	}
+
+
+	applyActionReactions = function(_stats, _reactions)
+	{
+	    var _clonedStat = variable_clone(_stats);
+	    var keys = struct_get_names(_reactions);
+		
+	    for (var i = 0; i < array_length(keys); i++)
+		{
+	        var _reactionName = keys[i];
+			
+			var _statVal = struct_get(_clonedStat, _reactionName);
+			
+			if (_statVal == undefined) return;
+			
+			_statVal += struct_get(_reactions, _reactionName);
+			
+			struct_set(_clonedStat, _reactionName, _statVal);
+			
+	    }
+	    return _clonedStat;
+	}
+	
+
+	updateNode = function(node, g, h, f, parent, action_name)
+	{
+	    node.g = g;
+	    node.h = h;
+	    node.f = f;
+	    node.parent = parent;
+	    node.action = action_name;
+	}
+
+	#endregion
+	
+	
+	#region		<Planning>
+	
+	
+	function astarNode(_id, _state, _action, _g, _h, _parent) constructor
+	{
+	    ID      = _id;                    // unique numeric
+	    state   = variable_clone(_state);    // 
+	    action  = _action;                // string name
+	    g       = _g;                     // accumulated cost
+	    h       = _h;                     // heuristic
+	    f       = _g + _h;                // total score
+	    parent  = _parent;                // link to another astarNode
+	}
+	
+	
+	#region		Helper Functions for createPlan
+	
+	hashState = function(_state)
+	{
+	    var keys = struct_get_names(_state);
+	    array_sort(keys, true);
+	    var str = "";
+	    for (var i = 0; i < array_length(keys); i++)
+	    {
+	        var key = keys[i];
+	        str += key + "~" + string(_state[$ key]) + ";";
+	    }
+	    return (str);
+	}
+	
+	hashActions = function(_actions)
+	{
+	    var keys = struct_get_names(_actions);
+	    array_sort(keys, true);
+	    var str = "";
+	    for (var i = 0; i < array_length(keys); i++)
+	    {
+	        var key = keys[i];
+	        var action = _actions[$ key];
+	        str += "["+key + ":" + string(action.cost) + " " + string(action.conditions) + " " + string(action.reactions) + " " + string(action.uuid)+ "]";
+	        
+	    }
+	    return (str);
+	}
+	
+	generatePlanKey = function(start, goal, actions)
+	{
+	    var key_start = hashState(start);
+	    var key_goal = hashState(goal);
+	    var key_actions = hashActions(actions);
+	    return "["+key_start + " -> " + key_goal + " :: " + key_actions+"] ";
+	}
+
+	
+	
+	initStartNode = function(start_state, goal_state)
+	{
+	    var h = heuristicScore(start_state, goal_state);
+	    return new astarNode(0, start_state, "", 0, h, undefined);
+	}
+
+	calculateHeuristic = function(state, goal)
+	{
+	    var key = string(state);
+	    if (struct_exists(heuristic_cache, key))
+		{
+	        
+			var _data = struct_get(heuristic_cache, key);
+			
+			planLog.logDebug($"Heuristic cache found: {heuristic_cache}");
+			
+			
+	        return _data;
+	    }
+		
+	    var h = heuristicScore(state, goal);
+	    struct_set(heuristic_cache, key, h);
+	    return h;
+	}
+
+	expandNode = function(current, goal_state, actions, open_queue, visited_nodes)
+	{
+	    var keys = array_shuffle(struct_get_names(actions));
+	    for (var i = 0; i < array_length(keys); i++)
+	    {
+	        var action = actions[$ keys[i]];
+	        if (!preconditionsMet(action.conditions, current.state))
+			{
+	            astarLog.nodes_failed++;
+	            continue;
+	        }
+
+	        var new_state = applyActionReactions(statSys.stats, action.reactions);
+			
+	        var new_key = string(new_state);
+	        if (struct_exists(visited_nodes, new_key)) continue;
+
+	        var g2 = current.g + action.cost;
+	        var h2 = calculateHeuristic(new_state, goal_state);
+
+	        var new_node = new astarNode(nextID++, new_state, action.name, g2, h2, current);
+	        ds_priority_add(open_queue, new_node, new_node.f);
+	        struct_set(visited_nodes, new_key, true);
+	        astarLog.nodes_opened++;
+	    }
+	}
+
+	processPlanningLoop = function(open_queue, visited_nodes, goal_state, actions)
+	{
+	    while (!ds_priority_empty(open_queue))
+	    {
+	        var current = ds_priority_delete_min(open_queue);
+	        astarLog.nodes_processed++;
+
+	        if (statesEqual(current.state, goal_state))
+	        {
+	            astarLog.time_took = current_time - astarLog.time_took;
+	            ds_priority_destroy(open_queue);
+
+	            var plan = reconstructPath(current);
+				
+	            return plan;
+	        }
+
+	        expandNode(current, goal_state, actions, open_queue, visited_nodes);
+	    }
+
+	    ds_priority_destroy(open_queue);
+	    return [];
+	}
+
+	#endregion
+	
+	
+	createPlan = function(_start_state, _goal_state, _actions)
+	{
+	    resetLog();
+	    astarLog.time_took = current_time;
+
+	    var open_queue = ds_priority_create();
+	    var visited_nodes = {};
+
+	    var start_node = initStartNode(_start_state, _goal_state);
+	    ds_priority_add(open_queue, start_node, start_node.f);
+	    struct_set(visited_nodes, string(_start_state), true);
+
+	    var _finalPlan = processPlanningLoop(open_queue, visited_nodes, _goal_state, _actions);
+		var _str_names = getActionsForGoal(array_last(_finalPlan));
+		return _str_names;	//	return a array with names of the actions as strings
+	}
+
+	
+	#endregion
+	
+}
+
+
+
+#region Node Stuff
+
+
+function nodeGOAP(_name) constructor
+{
+	uuid = "node_"//+generateUUID(8);
+	
+	name = _name;
+	
+	conditions = {};
+	
+	
+	showDebug = false; 
+	
+	addCondition = function(_name, _val)
+	{
+		if (struct_exists(conditions, _name))
+		{
+			if showDebug show_debug_message($"Condition ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(conditions, _name, _val);
+		
+	}
+	
+	
+}
+
+enum actionStatus
+{
+	idle,
+	running,
+	success,
+	failure,
+}
+
+function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
+{
+	uuid = "action_"//+generateUUID(9); // not needed rn
+	cost = _cost;
+	reactions = {};
+	requirements = {};
+	
+	isInterruptible = false;	// actions shouldnt really be interrupted
+	
+	
+	status = actionStatus.idle; //idle, running, success, failure
+	
+	#region		-- Setup the custom user functoins
+	
+	// Optional functions 
+	executeFunction = undefined;
+	onEntryFunc = undefined;
+	onExitFunc = undefined;
+	
+	// Flags to track whether onEntry and onExit have been executed
+    onEntryDone = false;
+    onExitDone = false;
+	started = false;
+	
+	#endregion
+	
+	#region		--- Public User Functions
+	
+	addReaction = function(_statName, _val)
+	{
+		if (struct_exists(reactions, _statName))
+		{
+			if showDebug show_debug_message($"Reaction ({_statName}) Exists Already.");
+			return;
+		}
+		
+		
+		struct_set(reactions, _statName, _val);
+	}
+	
+	
+	
+	// Function to set the execution logic
+    setExecuteFunction = function(_func)
+	{
+        executeFunction = _func;  // Set the function that executes the action
+    }
+    
+	setEntryFunction = function(_func)
+	{
+		onEntryFunc = _func;
+	}
+	
+	setExitFunction = function(_func)
+	{
+		onExitFunc = _func;
+	}
+	
+	canBeInterrupted = function(_val)
+	{
+		isInterruptible = _val;
+	}
+
+	#endregion	
+	
+	#region		-- Doing the custom user functions
+	
+    // Function to execute the action
+    execute = function()
+	{
+        if (executeFunction != undefined)
+		{
+            executeFunction();  // Call the function to execute the action
+        }
+        
+    }
+	
+	// Ensure onEntry is only done once
+    doOnEntry = function()
+    {
+		started = true;
+		if showDebug and !onEntryDone show_debug_message($"ENTERING Action: {name}");
+        if (onEntryFunc != undefined && !onEntryDone)
+        {
+            onEntryFunc();  // Call the on entry hook function
+            onEntryDone = true;  // Set the flag to true after calling the function
+			status = actionStatus.running;
+        }
+    }
+    
+    // Ensure onExit is only done once
+    doOnExit = function()
+    {
+		started = false;
+		
+		if showDebug and !onExitDone show_debug_message($"EXITING Action: {name}");
+        if (onExitFunc != undefined && !onExitDone)
+        {
+            onExitFunc();  // Call the on exit hook function
+            onExitDone = true;  // Set the flag to true after calling the function
+			
+			if (status == actionStatus.running)
+	        {
+	            status = actionStatus.success; // assume success unless changed manually, ie. failure
+	        }
+			
+			
+        }
+    }
+    
+	#endregion
+	
+	isRunning = function()
+	{
+		return (status == actionStatus.running);
+	}
+	
+    // Reset the flags when the action is completed or needs to reset
+    reset = function()
+    {
+        onEntryDone = false;
+        onExitDone = false;
+		started = false;
+		status = actionStatus.idle;
+    }
+	
+	
+	
+}
+
+
+function goalGOAP(_name) : nodeGOAP(_name) constructor
+{
+	// you can add priorities, a lot of different things
+	uuid = "goal_"//+generateUUID(9);
+	
+}
+
+
+#endregion
+
+
+
+function statManagerGOAP() constructor
+{
+	
+	stats = {};
+	
+	addStat = function(_name, _val)
+	{
+		
+		if !struct_exists(stats, _name) return;
+		
+		struct_set(stats, _name, _val);
+		
+	}
+	
+	setStats = function(_statStruct)
+	{
+		stats = _statStruct;
+	}
+	
+	getStat = function(_statName)
+	{
+		var _val = struct_get(stats, _statName);
+		if _val == undefined return;
+		
+		return _val;
+	}
+	
+	getStatStruct = function()
+	{
+		return stats;
+	}
+	
+}
+
+
+function goalSelectorGOAP() constructor
+{
+	
+}
+
+
+
+#region ---- Example Code
+
+
+/*
+
+Example Code:
+
+// GOAP BRAIN
+brain = new brainGOAP();
+
+//Actions
+var makeActionBuildFire = new actionGOAP("BuildFire", 2); 
+makeActionBuildFire.addCondition("hasWood", true);
+makeActionBuildFire.addReaction("hasFire", true);
+makeActionBuildFire.setExecuteFunction(function()
+{
+	show_debug_message("build fye.");
+	
+});
+
+var makeActionGatherWood = new actionGOAP("GatherWood", 1); 
+makeActionGatherWood.addCondition("hasAxe", true);
+makeActionGatherWood.addReaction("hasWood", true);
+makeActionGatherWood.setExecuteFunction(function()
+{
+	show_debug_message("Gather wood.");
+	
+});
+
+var makeActionWarmUp = new actionGOAP("WarmUp", 1); 
+makeActionWarmUp.addCondition("hasFire", true);
+makeActionWarmUp.addReaction("StayWarm", true);
+makeActionWarmUp.setExecuteFunction(function()
+{
+	show_debug_message("Warm up by the fye.");
+	
+});
+
+// Goals
+var makeGoalStayWarm = new goalGOAP("StayWarm");
+makeGoalStayWarm.addCondition("StayWarm", true);
+
+
+// Register sensors (these return the world state)
+brain.registerSensor("hasAxe", function() { return true; });
+brain.registerSensor("hasWood", function() { return false; });
+brain.registerSensor("hasFire", function() { return false; });
+
+//for the sensors you need to make them return true or false
+
+
+// Add actions
+brain.addAction(makeActionGatherWood);
+brain.addAction(makeActionBuildFire);
+brain.addAction(makeActionWarmUp);
+
+// Add goal
+brain.addGoal(makeGoalStayWarm);
+
+// Set target goal
+brain.setTargetGoal("StayWarm");
+
+// Create plan
+brain.generatePlan();
+
+brain.printPlan();
+
+
+// Place in Step Event 
+brain.executePlan();
+
+
+*/
+
+#endregion
+
