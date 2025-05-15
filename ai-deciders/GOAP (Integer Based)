@@ -1,0 +1,1091 @@
+
+// When creating goap actions think:
+/*
+
+	GOAP gets you to the party.
+	The party handles itself.
+	
+	GOAP is about getting into the right context.
+
+	The agent doesn’t plan every bite of food with GOAP —
+	It just planned to get to the fridge.
+	
+*/
+
+// Started : 4:00 PM on April 25, 2025.
+// Ended 9:00 PM on April 25, 2025
+
+
+function brainGOAP() constructor
+{
+	randomize();
+	
+	actions = {};
+	goals = {};
+	sensors = {};
+	
+	targetGoal = undefined;
+	
+	Log = new Logger("GOAP/Brain", true, [LogLevel.debug, LogLevel.info, LogLevel.warning]);
+	
+	planner = new plannerGOAP(); 
+	plan = [];
+	currentActionIndex = 0;  // init action index
+	
+	
+	
+	#region Primary User Functions
+	
+	addAction = function(_action)
+	{
+		
+		var _name = _action.name;
+		
+		if struct_exists(actions, _name)
+		{
+			Log.logWarning($"Action ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(actions, _name, _action);
+		
+	}
+	
+	addActionsByArray = function(_actions)
+	{
+		for(var i=0; i<array_length(_actions); i++)
+		{
+			var _a = _actions[i];
+			addAction(_a);
+		}
+	}
+	
+	addGoal = function(_goal)
+	{
+		
+		var _name = _goal.name;
+		
+		if struct_exists(goals, _name)
+		{
+			Log.logWarning($"Goal ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(goals, _name, _goal);
+		
+	}
+	
+	addGoalsByArray = function(_goals)
+	{
+		for(var i=0; i<array_length(_goals); i++)
+		{
+			var _g = _goals[i];
+			addGoal(_g);
+		}
+	}
+	
+	
+	registerSensor = function(_name, _func)
+	{
+		
+		if struct_exists(sensors, _name)
+		{
+			Log.logWarning($"Sensor ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(sensors, _name, _func);
+		
+	}
+	
+	
+	getSensorData = function(_name)
+	{
+		var _sensor = struct_get(sensors, _name);
+		
+		if _sensor == undefined
+		{
+			Log.logWarning($"Sensor: {_name} DNE.");
+			return false;
+		}
+		
+		return _sensor();
+		
+	}
+	
+	
+	setTargetGoal = function(_goalName)
+	{
+		
+		//show_debug_message("Goals: "+string(goals));
+		
+		if !struct_exists(goals, _goalName)
+		{
+			Log.logWarning("Set target goal failed. Goal DNE.");
+			return;
+		}
+		
+		targetGoal = struct_get(goals, _goalName);
+		
+	}
+	
+	initPlan = function(_plan=[])
+	{
+		plan = _plan;
+		currentActionIndex = 0;
+	}
+	
+	generatePlan = function()
+	{
+	    var _startTime = current_time;
+    
+	    var current_state = captureSensorSnapshot();
+	    var goal_state = targetGoal.conditions;
+	    var available_actions = actions;
+
+	    var new_plan = planner.createPlan(current_state, goal_state, available_actions);
+	    var plan_valid = (array_length(new_plan) > 0);
+
+	    if (!plan_valid)
+	    {
+			Log.logDebug("No valid plan could be generated.");
+			
+	        return false;
+	    }
+
+	    initPlan(new_plan); // Update plan with the new one
+
+	    var _endTime = (current_time - _startTime);
+		
+		
+		Log.logDebug($"New plan generated in ({string_format(_endTime, 0, 2)} ms) successfully.");
+		
+		printPlan();
+		
+	    return true;
+	}
+
+
+
+	#endregion
+
+	#region ALL Helper Functions
+	
+	#region -- Base Helper Functions
+	
+	captureSensorSnapshot = function()
+	{
+		var _snap = {};
+		
+		var _sensor_names = struct_get_names(sensors);
+		
+		for(var i=0; i<array_length(_sensor_names); i++)
+		{
+			var _name = _sensor_names[i];
+			
+			var _val = struct_get(sensors, _name);
+			
+			var _funct_ran = _val();
+			
+			struct_set(_snap, _name, _funct_ran);
+		}
+		
+		return _snap;
+		
+	}
+
+	printPlan = function()
+	{
+		var _len = array_length(plan);
+		
+		if (_len <= 0)
+		{
+			show_debug_message("Print Plan - Plan is empty.");
+			return;
+		}
+		
+		show_debug_message($"({_len}) ~ Printing Plan:");
+		
+		//show_debug_message(string(plan));
+		
+		for(var a=0; a<_len; a++)
+		{
+			
+			var _act = plan[a];
+			show_debug_message($"{a+1}: {_act}");
+			
+		}
+		
+	}
+	
+	drawSensors = function(_x, _y)
+	{
+		var _sensor_names = struct_get_names(sensors);
+		
+		for(var i=0; i<array_length(_sensor_names); i++)
+		{
+			var _sensor = _sensor_names[i];
+			var _val = struct_get(sensors, _sensor);
+			
+			draw_text(_x, (_y-(20*i)), $"Sensor: {_sensor} ~ {_val()}");
+			
+		}
+		
+	}
+	
+	#endregion
+	
+	#region --- FSM Helper Functions ---
+	
+	shouldInterruptAction = function(_act)
+	{
+		var _result = !planner.checkKeysMatch(_act.conditions, captureSensorSnapshot()) && _act.isInterruptible;	
+		return _result;
+	}
+
+	handleActionInterruption = function(_act)
+	{
+	    
+		Log.logWarning($"Regenerating Plan: Preconditions no longer valid (Interrupting) {plan[currentActionIndex]}");
+		
+	    // Standard GOAP interruption sequence
+	    _act.cleanup();  
+    
+	    generatePlan();   // Generate new plan
+	    fsm.setState("start");  // Transition out of executing
+	}
+
+	isActionComplete = function(_act)
+	{
+		
+		var _goapReactionsMet = planner.checkKeysMatch(_act.reactions, captureSensorSnapshot());
+		
+		if (!_goapReactionsMet)
+		{
+	        //Log.logWarning($"Action '{_act.name}' not completed. Reactions not met.");
+	    }
+		
+		return _goapReactionsMet; // Action is complete if reactions are met
+		
+	}
+
+	onActionCompleted = function(_act)
+	{
+		Log.logInfo($"Action completed successfully: {plan[currentActionIndex]}");
+
+	    // Final cleanup for completed action
+	    _act.cleanup();
+		
+	    // Move to the next action or finish the plan
+	    currentActionIndex++;
+	    if (currentActionIndex >= array_length(plan))
+	    {
+	        fsm.setState("finished");  // Plan complete
+	    }
+	    else
+	    {
+	        var _nextAct = struct_get(actions, plan[currentActionIndex]);
+	        _nextAct.doOnEntry();  // Start next action
+	        fsm.setState("executing");  // Continue executing
+	    }
+	}
+
+	isCommittedActionFailed = function(_act)
+	{
+		var _goapReactionsMet = planner.checkKeysMatch(_act.reactions, captureSensorSnapshot());
+		
+		return !_act.isInterruptible && !_goapReactionsMet && !_act.isRunning(); // Check if action is committed and failed
+		
+	}
+
+	onActionFailed = function(_act)
+	{
+	    
+		Log.logWarning($"Failed to execute action: {plan[currentActionIndex]}");
+
+	    // Cleanup for failed committed action
+	    _act.cleanup();
+    
+	    // Replan since the goal wasn't met
+	    generatePlan();
+	    fsm.setState("start");  // Transition out of executing after failure
+	}
+	
+	#endregion
+	
+	#endregion
+	
+	
+	#region		<Planner FSM>
+	
+	fsm = new fsmSYS("GOAP Planner State");
+	var _start_state = new state_fsmSYS("start");
+	var _executing_state = new state_fsmSYS("executing");
+	var _finished_state = new state_fsmSYS("finished");
+	
+	fsmLog = new Logger("GOAP/Planner/fsm", true, [LogLevel.debug]);
+	
+	
+	_start_state.setOnUpdateCallback(function()
+	{
+	    // Check if the goal is already satisfied
+	    if (planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
+	    {
+	        
+			fsmLog.logDebug("Target goal already met. Skipping plan generation.");
+	        return; // Skip plan generation if goal is already satisfied
+	    }
+
+	    // If the goal is not satisfied, generate a new plan
+	    if (array_length(plan) <= 0)
+	    {
+			fsmLog.logDebug("No plan found — generating...");
+			
+	        generatePlan();
+	        return;
+	    }
+		
+	    // --- Check if the NEXT action in the plan has valid preconditions AT THIS MOMENT ---
+	    currentActionIndex = 0; // Make sure we are checking the start of the current plan
+	    if (currentActionIndex >= array_length(plan)) // Safety check
+	    {
+	        fsmLog.logWarning("Plan became empty unexpectedly. Regenerating.");
+	        generatePlan(); // Try to get a plan
+	        return; // Stay in start state
+	    }
+
+	    var _act = struct_get(actions, plan[currentActionIndex]);
+	    var currentStateForCheck = captureSensorSnapshot(); // Get current state NOW
+
+	    // Check if the preconditions for THIS action are met in the CURRENT world state
+	    if (!planner.checkKeysMatch(_act.conditions, currentStateForCheck)) // <-- This is the check
+	    {
+	        // Preconditions are false for the next action in the plan BEFORE STARTING IT!
+	        Log.logWarning($"Plan's first action ({_act.name}) has invalid preconditions in the current world state. Regenerating.");
+	        // Do NOT call doOnEntry or transition to executing
+	        generatePlan(); // Generate a NEW plan from the CURRENT state
+	        // Stay in the start state to evaluate the NEW plan next frame
+	        return;
+	    }
+	    // --- END Check ---
+
+
+	    // If we reached here, the next action's preconditions ARE met.
+	    // NOW it's safe to start the action.
+	    fsmLog.logDebug($"Starting action: {_act.name}");
+	    _act.doOnEntry(); // Call entry hook ONLY if conditions are met
+	    fsm.setState("executing"); // Transition to executing
+		
+	});
+
+
+	_executing_state.setOnUpdateCallback(function()
+	{
+	    var _act = struct_get(actions, plan[currentActionIndex]);
+
+	    // --- Check for Immediate Interruption ---
+	    if (shouldInterruptAction(_act))
+	    {
+	        handleActionInterruption(_act);
+	        return; // Action interrupted, exit update callback
+	    }
+		
+
+	    // --- If Not Interrupted, Execute Action Step ---
+	    _act.execute();
+
+	    // --- Check for Completion After Execution ---
+	    if (isActionComplete(_act))
+	    {
+	        onActionCompleted(_act);
+	        return; // Action completed, exit update callback
+	    }
+
+	    // --- Handle Committed Actions that Fail Objective ---
+	    if (isCommittedActionFailed(_act))
+	    {
+	        onActionFailed(_act);
+	        return; // Action failed, exit update callback
+	    }
+
+	    // If none of the above, the action is still running, waiting for completion.
+	});
+
+
+	_finished_state.setOnEnterCallback(function()
+	{
+		fsmLog.logDebug("GOAP plan complete.");
+	
+	    // Only generate a new plan if the goal is not satisfied
+	    if (!planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
+	    {
+	        generatePlan(); // Only replan if the goal needs it
+	    }
+
+	    fsm.setState("start");
+	});
+
+	// Setup Planner FSM 
+	fsm.addStatesByArray([_start_state, _executing_state, _finished_state]);
+	fsm.setState("start");
+	
+	runPlan = function()
+	{
+		
+		fsmLog.doProfile("fsm.run",fsm.run);
+	}
+	
+	
+	
+	#endregion
+	
+}
+
+
+function plannerGOAP() constructor
+{
+	planLog = new Logger("GOAP/Planner", true, [LogLevel.info]);
+	
+    heuristic_cache = {};   // Cache for heuristic values
+    //plan_cache = {};        // Cache for previously generated plans
+	
+    nextID = 1;
+	
+	astarLog = {
+	    nodes_opened: 0,
+	    nodes_failed: 0,
+	    nodes_processed: 0,
+	    actions_evaluated: 0,
+		time_took: 0
+	}
+	
+	default_log = variable_clone(astarLog);
+	
+	resetLog = function()
+	{
+		astarLog = variable_clone(default_log);
+		
+		//show_debug_message("Restarting A* Log");
+	}
+	
+	printLog = function()
+	{
+		show_debug_message("--------------------------");
+		show_debug_message($"Log: {astarLog}");
+		show_debug_message("----- A* Log of DATA -----");
+		
+		var _vals = struct_get_names(astarLog);
+		
+		for(var i=0; i<array_length(_vals); i++)
+		{
+			var _name = _vals[i];
+			var _logVal = struct_get(astarLog, _name);
+			
+			if string(_name) == "time_took" _logVal = string_format(_logVal, 0, 5);
+			
+			show_debug_message($"{_name}: {_logVal}");
+		}
+		show_debug_message("--------------------------");
+	}
+
+	
+	#region Primary Helper Functions
+
+
+    heuristicScore = function(_state, _goal)
+	{
+        var error = 0;
+        var keys = struct_get_names(_goal);
+        for (var i = 0; i < array_length(keys); i++)
+		{
+            var key = keys[i];
+            if (!keyMatches(_state, _goal, key)) error++;
+
+        }
+        return error;
+    }
+	
+	checkKeysMatch = function(_conditions_or_reactions, _state_to_check) // Renamed parameters for clarity
+	{
+	    var _keys = struct_get_names(_conditions_or_reactions); // Iterate keys from the conditions/reactions set
+	    for (var i = 0; i < array_length(_keys); i++)
+	    {
+	        var _key = _keys[i];
+	        // Call keyMatches with STATE first, then CONDITIONS/REACTIONS
+	        if (!keyMatches(_state_to_check, _conditions_or_reactions, _key)) // <-- Swap parameters here!
+	        { 
+	            return false; // If ANY key doesn't match, the whole set doesn't match
+	        }
+	    }
+	    return true; // If all keys matched, the whole set matches
+	}
+
+    reconstructPath = function(_node)
+	{
+        var path = [];
+        while (_node.parent != undefined)
+		{
+            array_insert(path, 0, _node);
+            _node = _node.parent;
+			
+        }
+        return path;
+    }
+	
+	
+	getActionsForGoal = function(goal_node) // goal_node is the final astarNode
+	{
+	    var actions = []; // This array will store ACTION NAMES (strings)
+		
+	    // Start from the goal node and walk back through parents
+	    var current = goal_node; // 'current' should be an astarNode
+
+	    // --- DEBUG Start of Path Reconstruction ---
+	    if (current == undefined) {
+	        //show_debug_message("getActionsForGoal: Started with undefined goal_node!"); // Should not happen if a path was found
+	        return [];
+	    }
+	    //show_debug_message($"getActionsForGoal: Starting reconstruction from node ID {current.ID}");
+	    // --- END DEBUG ---
+
+	    // While current node is valid and has a parent (i.e., not the start node)
+	    while (current != undefined && current.parent != undefined) // <-- Error is reported on this line
+		{
+		    // --- DEBUG Inside Reconstruction Loop ---
+		    //show_debug_message($"  getActionsForGoal: Checking node ID {current.ID}");
+		    //show_debug_message($"    Parent property: Type = {typeof(current.parent)}, Value = {string(current.parent)}"); // Log parent's type and value
+
+		    // Add checks for unexpected types just before the line where error happens
+		    if (is_string(current.parent)) {
+		        //show_debug_message($"  getActionsForGoal: ERROR DETECTED - Parent is a string! Value: {string(current.parent)}");
+		        // This is the state we suspect leads to the error
+		        // You might need to break or return here to prevent the crash if it's about to happen
+		        //break; // Uncomment to break the loop
+		    }
+		    if (!is_struct(current.parent) && current.parent != undefined) {
+		        //show_debug_message($"  getActionsForGoal: ERROR DETECTED - Parent is defined but not a constructor! Type: {typeof(current.parent)}, Value: {string(current.parent)}");
+		        // break; // Uncomment to break the loop
+		    }
+		    // --- END DEBUG ---
+
+
+	        array_push(actions, current.action); // Collect the action NAME (string)
+	        current = current.parent; // Move up to the parent node
+	    }
+
+	    // --- DEBUG End of Loop ---
+	    //show_debug_message("getActionsForGoal: Finished loop.");
+	    //show_debug_message($"Final 'current' after loop: Type = {typeof(current)}, Value = {string(current)}"); // Should be undefined
+	    // --- END DEBUG ---
+
+	    // The actions are collected in reverse order, so reverse them for correct sequence
+	    actions = array_reverse(actions); // Array of strings
+
+	    return actions; // Returns array of action names
+	}
+
+	#endregion
+	
+	
+	#region Secondary Helper Functions
+	
+	keyMatches = function(_source, _target, key) // _source is the state, _target is the condition/goal
+	{
+	    // Check if the key exists in the source state struct
+	    if (!struct_exists(_source, key))
+		{
+	        // Log if a required key isn't in the state
+	        Log.logDebug($"keyMatches: Key '{key}' not found in source state.");
+	        return false; // If the key doesn't exist in the state, the condition can't be met
+	    }
+
+	    // Get the value from the source state and the condition data from the target/condition struct
+	    var state_value = _source[$ key];
+	    var condition_data = _target[$ key]; // This holds the condition requirement
+
+	    // --- DEBUG: Log the key being checked and its format ---
+	    // You might want to add context here like "called for Goal Check" vs "called for Action Precondition"
+	    // if you modify checkKeysMatch to pass that context. For now, this is okay.
+	    // show_debug_message($"  keyMatches: Checking key '{key}'..."); 
+	    // show_debug_message($"    State Value: {string(state_value)} (Type: {typeof(state_value)})");
+	    // show_debug_message($"    Condition Data: {string(condition_data)} (Type: {typeof(condition_data)})");
+
+
+	    // --- Check the format of the condition data ---
+	    if (is_struct(condition_data) && struct_exists(condition_data, "comparison") && struct_exists(condition_data, "value"))
+		{
+	        // It looks like our numerical comparison format: { comparison: "...", value: ... }
+
+	        var operator = condition_data.comparison;
+	        var target_value = condition_data.value;
+
+
+	        // Ensure the state value and target value are numeric for comparisons
+	        if (!is_numeric(state_value) || !is_numeric(target_value))
+			{
+	             // Log warning if numerical comparison is attempted on non-numbers
+	            Log.logWarning($"keyMatches: Cannot perform numerical comparison for key '{key}'. State value '{string(state_value)}' or target value '{string(target_value)}' is not numeric.");
+	            return false;
+	        }
+
+	        // Perform the numerical comparison based on the operator string
+	        switch (operator)
+			{
+	            case ">=": var result = state_value >= target_value;return result;
+	            case "<=": var result = state_value <= target_value; return result;
+	            case ">":  var result = state_value > target_value; return result;
+	            case "<":  var result = state_value < target_value; return result;
+	            case "=":  var result = state_value == target_value; return result; // Your equality case
+	            //case "!=": var result = state_value != target_value; return result; // Assuming i added !=
+	            default:
+	                Log.logError($"keyMatches: Unknown comparison operator '{operator}' for key '{key}'.");
+	                return false;
+	        }
+
+		    } else {
+		        // If it's NOT the numerical comparison struct format, assume it's a simple direct value match
+		        // This handles booleans (true/false), strings, or exact numbers defined directly.
+
+	            // --- DEBUG simple match ---
+	             // show_debug_message($"    keyMatches: Simple check for '{key}'");
+	             // show_debug_message($"    Comparing State Value ({string(state_value)}) vs Condition Value ({string(condition_data)})");
+	            // --- END DEBUG ---
+
+		        return state_value == condition_data; // Correct for simple matches
+		    }
+	    // Note: No explicit return false needed after the if/else blocks, as all paths return.
+	}
+
+	simulateReactions = function(state, reactions)
+	{
+	    var new_state = variable_clone(state); // Always work on a copy!
+	    var keys = struct_get_names(reactions);
+	    for (var i = 0; i < array_length(keys); i++)
+		{
+	        var k = keys[i]; // The key (e.g., "Energy", "is_safe")
+	        var reaction_value = reactions[$ k]; // The value from the reaction data (-14, true, "alert")
+
+	        // --- Logic to handle different reaction types ---
+	        // You need a way to determine if this value represents a numerical CHANGE vs a direct SET.
+	        // The simplest way is often to check if it's a number AND if the corresponding state property *is also* numeric.
+
+	        if (is_numeric(reaction_value) && struct_exists(new_state, k) && is_numeric(new_state[$ k]))
+			{
+	            // If the reaction value is numeric, AND the key exists in the state AND its current state value is numeric,
+	            // assume this is a numerical CHANGE (+ or -)
+            
+	            new_state[$ k] += reaction_value; // Apply the numerical change (add or subtract)
+	        } else {
+	            // Otherwise (if it's a boolean, string, or a number for a non-numeric state property, or a new property),
+	            // treat it as a direct SET value.
+            
+	            new_state[$ k] = reaction_value; // Direct assignment
+	        }
+	        // --- End Logic ---
+	    }
+	    return new_state; // Return the new state with effects applied
+	}
+
+
+	#endregion
+	
+	
+	#region		<Planning>
+	
+	
+	function astarNode(_id, _state, _action, _g, _h, _parent) constructor
+	{
+	    ID      = _id;                    // unique numeric
+	    state   = variable_clone(_state);    // 
+	    action  = _action;                // string name
+	    g       = _g;                     // accumulated cost
+	    h       = _h;                     // heuristic
+	    f       = _g + _h;                // total score
+	    parent  = _parent;                // link to another astarNode
+	}
+	
+	
+	#region		Helper Functions for createPlan
+	
+	
+	initStartNode = function(start_state, goal_state)
+	{
+	    var h = heuristicScore(start_state, goal_state);
+	    return new astarNode(0, start_state, "", 0, h, undefined);
+	}
+
+	calculateHeuristic = function(state, goal)
+	{
+	    var key = hashState(state);
+	    if (struct_exists(heuristic_cache, key))
+		{
+	        
+			var _data = struct_get(heuristic_cache, key);
+			
+			planLog.logDebug($"Heuristic cache found: {heuristic_cache}");
+			
+			
+	        return _data;
+	    }
+		
+	    var h = heuristicScore(state, goal);
+	    struct_set(heuristic_cache, key, h);
+	    return h;
+	}
+
+
+	hashState = function(_state)
+	{
+	    var keys = struct_get_names(_state);
+	    array_sort(keys, true); // VERY IMPORTANT: Sort keys alphabetically
+	    var str = "{";
+	    for (var i = 0; i < array_length(keys); i++)
+		{
+	        var key = keys[i];
+	        var value = _state[$ key];
+	        str += string(key) + ":" + string(value); // Convert key and value to string consistently
+	        if (i < array_length(keys) - 1)
+			{
+	            str += ",";
+	        }
+	    }
+	    str += "}"; // Add delimiters to the start/end for clarity
+	    return str;
+	}
+	
+	
+	
+	expandNode = function(current, goal_state, actions, open_queue, visited_nodes)
+	{
+	    var keys = array_shuffle(struct_get_names(actions));
+	    //show_debug_message($"--- Expanding from State ID {current.ID} (g:{current.g}, h:{current.h}, f:{current.f}, Hash:{hashState(current.state)}) ---"); // Log current state details
+	    //show_debug_message($"Considering {array_length(keys)} actions.");
+
+	    for (var i = 0; i < array_length(keys); i++)
+	    {
+		    var action_name = keys[i];
+		    var action = actions[$ action_name];
+		    //show_debug_message($"  -> Considering Action: {action_name}");
+
+		    // --- Check Conditions ---
+		    var preconditions_met = checkKeysMatch(action.conditions, current.state);
+		    //show_debug_message($"    Conditions Met: {preconditions_met}");
+
+		    if (!preconditions_met)
+			{
+		        astarLog.nodes_failed++;
+		        //show_debug_message($"    Conditions NOT met for {action_name}. Skipping action.");
+		        continue; // Skip this action, conditions not met
+		    }
+			// --- End Check Conditions ---
+
+			// --- Simulate Reactions ---
+		    //show_debug_message($"    Conditions MET. Simulating reactions for {action_name}...");
+		    var new_state = simulateReactions(current.state, action.reactions);
+			//show_debug_message($"    Simulated New State (Hash): {hashState(new_state)}");
+		    // show_debug_message($"    Simulated New State (String): {string(new_state)}"); // Optional: Use string for potentially clearer view of contents
+	        // Optional: Log specific state keys changing, e.g., show_debug_message($"    Energy after {action_name}: {new_state.Energy}");
+
+
+			// --- Visited Node Check ---
+		    var new_key = hashState(new_state); // <-- Ensure hashState is used here and is correct
+		    if (struct_exists(visited_nodes, new_key))
+			{
+				var visited_node_id = visited_nodes[$ new_key]; // If you stored ID when marking visited
+				//show_debug_message($"    State (Hash: {new_key}) for {action_name} already visited (Node ID: {visited_node_id ? visited_node_id : "unknown" }). Skipping.");
+				continue; // Skip this state, already visited
+			}
+			// --- End Visited Node Check ---
+
+			// --- Calculate Costs and Heuristic ---
+		    var g2 = current.g + action.cost;
+		    var h2 = calculateHeuristic(new_state, goal_state); // Make sure calculateHeuristic uses hashState
+			var f2 = g2 + h2;
+		    //show_debug_message($"    Costs for {action_name} -> New State: g={g2}, h={h2}, f={f2}");
+
+			// --- Create and Add New Node ---
+		    var new_node = new astarNode(nextID++, new_state, action.name, g2, h2, current);
+		    ds_priority_add(open_queue, new_node, new_node.f);
+		    struct_set(visited_nodes, new_key, new_node.ID); // Store the node ID with the hash!
+		    astarLog.nodes_opened++;
+		    //show_debug_message($"    Added New Node ID {new_node.ID} (Hash: {new_key}) to Open Queue.");
+
+		    // --- DEBUG LOG END FOR THIS ACTION ---
+		    //show_debug_message($"    ----------------------------------------");
+		}
+	    //show_debug_message($"--- Finished Expanding State ID {current.ID} ---");
+	}
+	
+	
+	processPlanningLoop = function(open_queue, visited_nodes, goal_state, actions)
+	{
+	    while (!ds_priority_empty(open_queue))
+	    {
+	        var current = ds_priority_delete_min(open_queue); // Get the best node
+
+	        // Increment processed node count
+	        astarLog.nodes_processed++;
+
+	        // --- DEBUG GOAL CHECK ---
+	        //show_debug_message($"--- Checking Goal for State ID {current.ID} (Hash: {hashState(current.state)}) ---");
+	        var goal_check_result = checkKeysMatch(goal_state, current.state);
+	        //show_debug_message($"Goal Check Result: {goal_check_result}");
+	        // --- END DEBUG GOAL CHECK ---
+
+	        // If goal is reached
+	        if (goal_check_result)
+	        {
+	            //show_debug_message($"--- GOAL REACHED! State ID {current.ID} ---"); // Add success log
+	            astarLog.time_took = current_time - astarLog.time_took;
+
+	            // --- Path Reconstruction BEFORE Destroying Queue ---
+	            var plan_nodes = reconstructPath(current); // Reconstruct path (array of astarNodes)
+
+	            // --- NOW Destroy the Queue ---
+	            ds_priority_destroy(open_queue); // Destroy the queue after path is reconstructed
+
+	            // --- Get Action Names from Reconstructed Nodes ---
+                // You can iterate the plan_nodes array directly to get names,
+                // or continue using getActionsForGoal if you prefer its logic.
+                // Let's use getActionsForGoal as it seems to expect walking up from the goal node.
+                // getActionsForGoal needs the GOAL NODE as input. The goal node is 'current' here.
+
+                var _str_names = getActionsForGoal(current); // Pass the goal node to getActionsForGoal
+
+	            // Debug log the final action names found
+	            //show_debug_message($"getActionsForGoal returned plan: {string(_str_names)}");
+
+	            return _str_names; // Return array of action names
+	        }
+
+	        // If goal not reached, expand the current node
+	        expandNode(current, goal_state, actions, open_queue, visited_nodes);
+	    }
+
+	    // If the loop finishes (queue is empty and goal not found)
+	    ds_priority_destroy(open_queue); // Destroy the queue here too if loop finishes naturally
+	    show_debug_message("Process Planning Loop finished without finding a plan.");
+	    return []; // Return an empty plan
+	}
+
+
+	#endregion
+	
+	
+	createPlan = function(_start_state, _goal_state, _actions)
+	{
+	    resetLog();
+	    astarLog.time_took = current_time;
+
+	    var open_queue = ds_priority_create();
+	    var visited_nodes = {};
+
+	    var start_node = initStartNode(_start_state, _goal_state);
+	    ds_priority_add(open_queue, start_node, start_node.f);
+	    struct_set(visited_nodes, hashState(_start_state), true);
+
+	    var _finalPlan = processPlanningLoop(open_queue, visited_nodes, _goal_state, _actions);
+		//var _str_names = getActionsForGoal(array_last(_finalPlan));
+		return _finalPlan;	//	return a array with names of the actions as strings
+	}
+
+	
+	#endregion
+	
+}
+
+
+#region Node Stuff
+
+
+function nodeGOAP(_name) constructor
+{
+	//uuid = "node_"//+generateUUID(8);
+	
+	name = _name;
+	
+	conditions = {};
+	
+	
+	showDebug = false; 
+	
+	
+	addCondition = function(_name, _comp, _val)
+	{
+		if (struct_exists(conditions, _name))
+		{
+			if showDebug show_debug_message($"Condition ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(conditions, _name, {comparison: _comp , value: _val});
+		
+	}
+	
+	addSimpleCondition = function(_name, _val)
+	{
+		if (struct_exists(conditions, _name))
+		{
+			if showDebug show_debug_message($"Condition ({_name}) Exists Already.");
+			return;
+		}
+		
+		struct_set(conditions, _name, _val);
+	}
+	
+	addEualToCondition = function(_name, _val) { addCondition(_name, "=", _val); }
+	addGreaterThanCondition = function(_name, _val) { addCondition(_name, ">", _val); }
+	addGreaterThanOrEqualToCondition = function(_name, _val) { addCondition(_name, ">=", _val); }
+	addLessThanCondition = function(_name, _val) { addCondition(_name, "<", _val); }
+	addLessThanOrEqualToCondition = function(_name, _val) { addCondition(_name, "<=", _val); }
+	
+	
+}
+
+enum actionStatus
+{
+	idle,
+	running,
+	success,
+	failure,
+}
+
+function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
+{
+	cost = _cost;
+	reactions = {};
+	isInterruptible = true;
+	
+	
+	status = actionStatus.idle; //idle, running, success, failure
+	
+	#region		-- Setup the custom user functoins
+	
+	// Optional functions 
+	executeFunction = undefined;
+	onEntryFunc = undefined;
+	onExitFunc = undefined;
+	
+	// Flags to track whether onEntry and onExit have been executed
+    onEntryDone = false;
+    onExitDone = false;
+	started = false;
+	
+	#endregion
+	
+	#region		--- Public User Functions
+	
+	addReaction = function(_name, _val)
+	{
+		if (struct_exists(reactions, _name))
+		{
+			if showDebug show_debug_message($"Reaction ({_name}) Exists Already.");
+			return;
+		}
+		
+		
+		struct_set(reactions, _name, _val);
+	}
+	
+	
+	
+	// Function to set the execution logic
+    setExecuteFunction = function(_func)
+	{
+        executeFunction = _func;  // Set the function that executes the action
+    }
+    
+	setEntryFunction = function(_func)
+	{
+		onEntryFunc = _func;
+	}
+	
+	setExitFunction = function(_func)
+	{
+		onExitFunc = _func;
+	}
+	
+	canBeInterrupted = function(_val)
+	{
+		isInterruptible = _val;
+	}
+
+	#endregion	
+	
+	#region		-- Doing the custom user functions
+	
+    // Function to execute the action
+    execute = function()
+	{
+        if (executeFunction != undefined)
+		{
+            executeFunction();  // Call the function to execute the action
+        }
+        
+    }
+	
+	// Ensure onEntry is only done once
+    doOnEntry = function()
+    {
+		started = true;
+		if showDebug and !onEntryDone show_debug_message($"ENTERING Action: {name}");
+        if (onEntryFunc != undefined && !onEntryDone)
+        {
+            onEntryFunc();  // Call the on entry hook function
+            onEntryDone = true;  // Set the flag to true after calling the function
+			status = actionStatus.running;
+        }
+    }
+    
+    // Ensure onExit is only done once
+    doOnExit = function()
+    {
+		started = false;
+		
+		if showDebug and !onExitDone show_debug_message($"EXITING Action: {name}");
+        if (onExitFunc != undefined && !onExitDone)
+        {
+            onExitFunc();  // Call the on exit hook function
+            onExitDone = true;  // Set the flag to true after calling the function
+			
+			if (status == actionStatus.running)
+	        {
+	            status = actionStatus.success; // assume success unless changed manually, ie. failure
+	        }
+			
+			
+        }
+    }
+    
+	cleanup = function()
+	{
+		doOnExit();
+		reset();
+	}
+	
+	#endregion
+	
+	isRunning = function()
+	{
+		return (status == actionStatus.running);
+	}
+	
+    // Reset the flags when the action is completed or needs to reset
+    reset = function()
+    {
+        onEntryDone = false;
+        onExitDone = false;
+		started = false;
+		status = actionStatus.idle;
+    }
+	
+}
+
+
+function goalGOAP(_name) : nodeGOAP(_name) constructor
+{
+	
+}
+
+
+#endregion
