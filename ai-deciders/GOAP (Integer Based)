@@ -27,7 +27,7 @@ function brainGOAP() constructor
 	
 	targetGoal = undefined;
 	
-	Log = new Logger("GOAP/Brain", true, [LogLevel.debug, LogLevel.info, LogLevel.warning]);
+	Log = new Logger("GOAP/Brain", true, [LogLevel.debug, LogLevel.warning]);
 	
 	planner = new plannerGOAP(); 
 	plan = [];
@@ -143,7 +143,8 @@ function brainGOAP() constructor
 	    var current_state = captureSensorSnapshot();
 	    var goal_state = targetGoal.conditions;
 	    var available_actions = actions;
-
+		
+		var pruned_actions = pruneActionsByGoal(available_actions, goal_state);
 	    var new_plan = planner.createPlan(current_state, goal_state, available_actions);
 	    var plan_valid = (array_length(new_plan) > 0);
 
@@ -218,6 +219,49 @@ function brainGOAP() constructor
 		}
 		
 	}
+	
+	/// pruneActionsByGoal(actions, goal_state)
+	/// @param actions - struct of all actions
+	/// @param goal_state - struct of goal state keys/values
+	/// @returns a new struct with only actions that affect the goal
+
+	pruneActionsByGoal = function(actions, goal_state)
+	{
+	    var pruned_actions = {};
+	    var goal_keys = struct_get_names(goal_state);
+
+	    var action_names = struct_get_names(actions);
+	    for (var i = 0; i < array_length(action_names); i++)
+		{
+	        var action_name = action_names[i];
+	        var action = actions[$ action_name];
+        
+	        // Check if action.effects change any key relevant to the goal
+	        var effects_keys = struct_get_names(action.reactions); // Assuming 'reactions' holds effects
+        
+	        var relevant = false;
+	        for (var k = 0; k < array_length(effects_keys); k++)
+			{
+	            var effect_key = effects_keys[k];
+            
+	            if (array_contains(goal_keys, effect_key))
+				{
+	                // If the effect value is different from goal, it's relevant
+	                if (action.reactions[$ effect_key] != goal_state[$ effect_key])
+					{
+	                    relevant = true;
+	                    break;
+	                }
+	            }
+	        }
+        
+	        if (relevant) {
+	            pruned_actions[$ action_name] = action;
+	        }
+	    }
+	    return pruned_actions;
+	}
+
 	
 	drawSensors = function(_x, _y)
 	{
@@ -445,10 +489,10 @@ function brainGOAP() constructor
 
 function plannerGOAP() constructor
 {
-	planLog = new Logger("GOAP/Planner", true, [LogLevel.info]);
+	planLog = new Logger("GOAP/Planner", true, [LogLevel.info, LogLevel.profile]);
 	
     heuristic_cache = {};   // Cache for heuristic values
-    //plan_cache = {};        // Cache for previously generated plans
+    plan_cache = {};        // Cache for previously generated plans
 	
     nextID = 1;
 	
@@ -645,11 +689,25 @@ function plannerGOAP() constructor
 	    return actions; // Returns array of action names
 	}
 
+
+	
+
 	#endregion
 	
 	
 	#region Secondary Helper Functions
 	
+	// Generate a unique cache key for a given start state and goal conditions.
+	// This key is used to store and retrieve plans from the plan_cache.
+	generateCacheKey = function(_startState, _goalConditions)
+	{
+		// Combine the hash of the start state and the hash of the goal conditions.
+		// Ensure goal conditions are also hashed consistently (e.g., sort keys).
+		var start_state_hash = hashState(_startState);
+		var goal_conditions_hash = hashState(_goalConditions); // Assuming goal conditions are a struct
+
+		return start_state_hash + "|" + goal_conditions_hash; // Use a separator that won't appear in hashes
+	}
 	
 	keyMatches = function(_state_to_check, _target_struct, _key_to_check)
 	{
@@ -708,6 +766,7 @@ function plannerGOAP() constructor
 	        return state_value == condition_value;
 	    }
 	}
+	
 	
 	// --- Simulate applying an action's reactions to a state ---
     simulateReactions = function(_state, _reactions)
@@ -818,68 +877,61 @@ function plannerGOAP() constructor
 	    return str;
 	}
 	
+	
 	expandNode = function(current, goal_state, actions, open_queue, visited_nodes)
 	{
 	    var keys = array_shuffle(struct_get_names(actions));
-	    //show_debug_message($"--- Expanding from State ID {current.ID} (g:{current.g}, h:{current.h}, f:{current.f}, Hash:{hashState(current.state)}) ---"); // Log current state details
-	    //show_debug_message($"Considering {array_length(keys)} actions.");
 
 	    for (var i = 0; i < array_length(keys); i++)
 	    {
-		    var action_name = keys[i];
-		    var action = actions[$ action_name];
-		    //show_debug_message($"  -> Considering Action: {action_name}");
+	        var action_name = keys[i];
+	        var action = actions[$ action_name];
 
-		    // --- Check Conditions ---
-		    var preconditions_met = checkKeysMatch(action.conditions, current.state);
-		    //show_debug_message($"    Conditions Met: {preconditions_met}");
+	        // --- Check Preconditions ---
+	        if (!checkKeysMatch(action.conditions, current.state))
+	        {
+	            astarLog.nodes_failed++;
+	            continue;
+	        }
 
-		    if (!preconditions_met)
-			{
-		        astarLog.nodes_failed++;
-		        //show_debug_message($"    Conditions NOT met for {action_name}. Skipping action.");
-		        continue; // Skip this action, conditions not met
-		    }
-			// --- End Check Conditions ---
+	        // --- Simulate Reactions ---
+	        var new_state = simulateReactions(current.state, action.reactions);
+	        var new_key = hashState(new_state);
 
-			// --- Simulate Reactions ---
-		    //show_debug_message($"    Conditions MET. Simulating reactions for {action_name}...");
-		    var new_state = simulateReactions(current.state, action.reactions);
+	        // --- Calculate Costs ---
+	        var g2 = current.g + action.cost;
+	        var h2 = calculateHeuristic(new_state, goal_state);
+	        var f2 = g2 + h2;
+
+	        // --- Check Visited ---
+	        if (struct_exists(visited_nodes, new_key))
+	        {
+	            var existing_entry = struct_get(visited_nodes, new_key);
+	            if (is_struct(existing_entry) && existing_entry.g <= g2)
+	            {
+	                continue; // Worse or equal path already exists
+	            }
+	        }
+
+	        // --- Create and Store New Node ---
+	        var new_node = new astarNode(nextID++, new_state, action.name, g2, h2, current);
+	        ds_priority_add(open_queue, new_node, new_node.f);
 			
-			// --- Visited Node Check ---
-		    var new_key = hashState(new_state); // <-- Ensure hashState is used here and is correct
-		    if (struct_exists(visited_nodes, new_key))
-			{
-				var visited_node_id = visited_nodes[$ new_key]; // If you stored ID when marking visited
-				//show_debug_message($"    State (Hash: {new_key}) for {action_name} already visited (Node ID: {visited_node_id ? visited_node_id : "unknown" }). Skipping.");
-				continue; // Skip this state, already visited
-			}
-			// --- End Visited Node Check ---
+			struct_set(visited_nodes, new_key, {g: g2, f: f2, node: new_node});
 
-			 //--- Calculate Costs and Heuristic ---
-		    var g2 = current.g + action.cost;
-		    var h2 = calculateHeuristic(new_state, goal_state); // Make sure calculateHeuristic uses hashState
-			var f2 = g2 + h2;
-		    //show_debug_message($"    Costs for {action_name} -> New State: g={g2}, h={h2}, f={f2}");
-
-			 //--- Create and Add New Node ---
-		    var new_node = new astarNode(nextID++, new_state, action.name, g2, h2, current);
-		    ds_priority_add(open_queue, new_node, new_node.f);
-		    struct_set(visited_nodes, new_key, new_node.ID); // Store the node ID with the hash!
-		    astarLog.nodes_opened++;
-		    //show_debug_message($"    Added New Node ID {new_node.ID} (Hash: {new_key}) to Open Queue.");
-
-		}
-	    //show_debug_message($"--- Finished Expanding State ID {current.ID} ---");
+	        astarLog.nodes_opened++;
+	    }
 	}
+
 	
-	processPlanningLoop = function(open_queue, visited_nodes, goal_state, actions)
+	
+	
+	processPlanningLoop = function(start_state, open_queue, visited_nodes, goal_state, actions)
 	{
-	    while (!ds_priority_empty(open_queue))
+		var MAX_PLANNING_STEPS = 10000; //If it hits 10,000 nodes then the search space is too large.
+	    while (!ds_priority_empty(open_queue) && astarLog.nodes_processed < MAX_PLANNING_STEPS)
 	    {
 	        var current = ds_priority_delete_min(open_queue); // Get the best node
-
-	        // Increment processed node count
 	        astarLog.nodes_processed++;
 
 	        // --- DEBUG GOAL CHECK ---
@@ -893,34 +945,33 @@ function plannerGOAP() constructor
 	        {
 	            //show_debug_message($"--- GOAL REACHED! State ID {current.ID} ---"); // Add success log
 	            astarLog.time_took = current_time - astarLog.time_took;
-
-	            // --- Path Reconstruction BEFORE Destroying Queue ---
-	            var plan_nodes = reconstructPath(current); // Reconstruct path (array of astarNodes)
-
-	            // --- NOW Destroy the Queue ---
-	            ds_priority_destroy(open_queue); // Destroy the queue after path is reconstructed
-
-	            // --- Get Action Names from Reconstructed Nodes ---
-                // You can iterate the plan_nodes array directly to get names,
-                // or continue using getActionsForGoal if you prefer its logic.
-                // Let's use getActionsForGoal as it seems to expect walking up from the goal node.
-                // getActionsForGoal needs the GOAL NODE as input. The goal node is 'current' here.
+	            ds_priority_destroy(open_queue);
 
                 var _str_names = getActionsForGoal(current); // Pass the goal node to getActionsForGoal
+				
+				// --- Cache the found plan ---
+				var cache_key = generateCacheKey(start_state, goal_state); // Use the GOAL state for caching
+				struct_set(plan_cache, cache_key, _str_names);
+				planLog.logInfo($"Plan cached for state/goal: {cache_key}");
 
 	            // Debug log the final action names found
-	            show_debug_message($"getActionsForGoal returned plan: {string(_str_names)}");
+	            //show_debug_message($"getActionsForGoal returned plan: {string(_str_names)}");
 
 	            return _str_names; // Return array of action names
 	        }
 
 	        // If goal not reached, expand the current node
-	        expandNode(current, goal_state, actions, open_queue, visited_nodes);
+	        //expandNode(current, goal_state, actions, open_queue, visited_nodes);
+			
+			planLog.doProfile("expandNode", expandNode, [current, goal_state, actions, open_queue, visited_nodes]);
+			
 	    }
-
+		
 	    // If the loop finishes (queue is empty and goal not found)
 	    ds_priority_destroy(open_queue); // Destroy the queue here too if loop finishes naturally
-	    show_debug_message("Process Planning Loop finished without finding a plan.");
+		planLog.logWarning($"No valid plan could be generated within limits (Processed: {astarLog.nodes_processed}, Explored: {astarLog.nodes_opened}).");
+
+	    //show_debug_message("Process Planning Loop finished without finding a plan.");
 	    return []; // Return an empty plan
 	}
 
@@ -933,14 +984,28 @@ function plannerGOAP() constructor
 	    resetLog();
 	    astarLog.time_took = current_time;
 
+		// --- Check Plan Cache ---
+		var cache_key = generateCacheKey(_start_state, _goal_state);
+		if (struct_exists(plan_cache, cache_key))
+		{
+			var cached_plan = struct_get(plan_cache, cache_key);
+			planLog.logInfo($"Plan found in cache for state/goal: {cache_key}. Using cached plan.");
+			astarLog.time_took = current_time - astarLog.time_took; // Calculate time for cache lookup
+			//printLog(); // Print log even for cached plans
+			return cached_plan; // Return the cached plan immediately
+		}
+
 	    var open_queue = ds_priority_create();
 	    var visited_nodes = {};
 
 	    var start_node = initStartNode(_start_state, _goal_state);
 	    ds_priority_add(open_queue, start_node, start_node.f);
-	    struct_set(visited_nodes, hashState(_start_state), true);
+		
+	    struct_set(visited_nodes, hashState(_start_state), { g: start_node.g, f: start_node.f, node: start_node });
 
-	    var _finalPlan = processPlanningLoop(open_queue, visited_nodes, _goal_state, _actions);
+	    //var _finalPlan = processPlanningLoop(_start_state, open_queue, visited_nodes, _goal_state, _actions);
+		var _finalPlan = planLog.doProfile("processPlanningLoop", processPlanningLoop, [_start_state, open_queue, visited_nodes, _goal_state, _actions]);
+		
 		return _finalPlan;	//	return a array with names of the actions as strings
 	}
 
@@ -1144,141 +1209,3 @@ function goalGOAP(_name) : nodeGOAP(_name) constructor
 
 
 #endregion
-
-
-/*
-
-
-// --- Real World State Variables for the AI ---
-// These are the actual stats/flags the AI instance holds
-real_has_weapon = false;
-real_ammo = 0;
-real_scrap = 0; // Start with 0 scrap
-real_weapon_needs_repair = false; // Weapon is NOT broken if we don't have one
-
-
-// Create an instance of the GOAP brain
-goap_brain = new brainGOAP();
-
-// --- Define and Register Sensors ---
-// Sensor for HasWeapon (boolean)
-goap_brain.registerSensor("HasWeapon", function()
-{
-    return real_has_weapon; // Read the actual boolean stat
-});
-
-// Sensor for Ammo (numerical)
-goap_brain.registerSensor("Ammo", function()
-{
-    return real_ammo; // Read the actual numerical stat
-});
-
-// Sensor for Scrap (numerical)
-goap_brain.registerSensor("Scrap", function()
-{
-    return real_scrap; // Read the actual numerical stat
-});
-
-// Sensor for WeaponNeedsRepair (boolean)
-goap_brain.registerSensor("WeaponNeedsRepair", function()
-{
-    return real_weapon_needs_repair; // Read the actual boolean stat
-});
-
-
-// --- Define Goal ---
-// Goal: Have a weapon, enough ammo, and the weapon is NOT broken
-var goal_armed_and_ready = new goalGOAP("ArmedAndReady");
-// Goal conditions using numerical and simple formats
-goal_armed_and_ready.addSimpleCondition("HasWeapon", true);
-goal_armed_and_ready.addGreaterThanOrEqualToCondition("Ammo", 10);
-goal_armed_and_ready.addSimpleCondition("WeaponNeedsRepair", false); // Goal is NOT needing repair
-
-// Add the goal to the brain
-goap_brain.addGoal(goal_armed_and_ready);
-
-
-// Action: Find Weapon (Cost 10)
-var action_find_weapon = new actionGOAP("FindWeapon", 10);
-action_find_weapon.addSimpleCondition("HasWeapon", false);
-// Reactions: Gain weapon, and it needs repair
-action_find_weapon.addReaction("HasWeapon", true);
-action_find_weapon.addReaction("WeaponNeedsRepair", true);
-// onEntry: Change the real world state
-action_find_weapon.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
-{
-    show_debug_message("AI is finding a weapon...");
-    real_has_weapon = true;
-    real_weapon_needs_repair = true;
-});
-
-
-// Action: Collect Scrap (Cost 5)
-var action_collect_scrap = new actionGOAP("CollectScrap", 5);
-// Conditions: None for simplicity in this example
-action_collect_scrap.addLessThanCondition("Scrap", 85);
-// Reaction: Gain 15 scrap
-action_collect_scrap.addReaction("Scrap", +5);
-// onEntry: Change the real world state
-action_collect_scrap.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
-{
-    show_debug_message("AI is collecting scrap...");
-    real_scrap += 15; // Add scrap to the real AI stat
-    show_debug_message("AI collected scrap. Total scrap: " + string(real_scrap));
-});
-
-
-// Action: Craft Ammo (Cost 8)
-var action_craft_ammo = new actionGOAP("CraftAmmo", 8);
-// Conditions: Need enough scrap, and need a weapon
-action_craft_ammo.addGreaterThanOrEqualToCondition("Scrap", 5);
-action_craft_ammo.addSimpleCondition("HasWeapon", true);
-// Reactions: Spend 5 scrap, gain 10 ammo
-action_craft_ammo.addReaction("Scrap", -5);
-action_craft_ammo.addReaction("Ammo", +10);
-// onEntry: Change the real world state
-action_craft_ammo.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
-{
-    show_debug_message("AI is crafting ammo...");
-    real_scrap -= 5; // Deduct scrap from real AI stat
-    real_ammo += 10; // Add ammo to real AI stat
-    show_debug_message("AI crafted ammo. Scrap: " + string(real_scrap) + ", Ammo: " + string(real_ammo));
-});
-
-
-// Action: Repair Weapon (Cost 12)
-var action_repair_weapon = new actionGOAP("RepairWeapon", 12);
-// Conditions: Weapon needs repair, need enough scrap, need a weapon
-action_repair_weapon.addSimpleCondition("WeaponNeedsRepair", true);
-action_repair_weapon.addGreaterThanOrEqualToCondition("Scrap", 10);
-action_repair_weapon.addSimpleCondition("HasWeapon", true);
-// Reactions: Spend 10 scrap, weapon no longer needs repair
-action_repair_weapon.addReaction("Scrap", -10);
-action_repair_weapon.addReaction("WeaponNeedsRepair", false);
-// onEntry: Change the real world state
-action_repair_weapon.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
-{
-    show_debug_message("AI is repairing weapon...");
-    real_scrap -= 10; // Deduct scrap from real AI stat
-    real_weapon_needs_repair = false; // Set weapon as repaired
-    show_debug_message("AI repaired weapon. Scrap: " + string(real_scrap) + ", Needs Repair: " + string(real_weapon_needs_repair));
-});
-
-
-// Add actions to the brain
-goap_brain.addActionsByArray([
-    action_find_weapon,
-    action_collect_scrap,
-    action_craft_ammo,
-    action_repair_weapon
-]);
-
-
-// --- Set the Target Goal ---
-goap_brain.setTargetGoal("ArmedAndReady");
-
-show_debug_message("Starting GOAP brain with 'Get Armed' goal...");
-goap_brain.generatePlan();
-// In your Step event, you would then call goap_brain.runPlan();
-
-*/
