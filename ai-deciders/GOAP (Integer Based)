@@ -491,19 +491,79 @@ function plannerGOAP() constructor
 	
 	#region Primary Helper Functions
 
-
-    heuristicScore = function(_state, _goal)
+	
+	heuristicScore = function(_state, _goal)
 	{
-        var error = 0;
-        var keys = struct_get_names(_goal);
-        for (var i = 0; i < array_length(keys); i++)
-		{
-            var key = keys[i];
-            if (!keyMatches(_state, _goal, key)) error++;
+	    var error = 0;
 
-        }
-        return error;
-    }
+	    var BASE_BOOLEAN_PENALTY = 10;
+	    var MISSING_KEY_PENALTY = 50;
+	    var INVALID_NUMERIC_PENALTY = 100;
+
+	    var goal_keys = struct_get_names(_goal);
+	    for (var i = 0; i < array_length(goal_keys); i++)
+	    {
+	        var key = goal_keys[i];
+	        var condition_data = _goal[$ key];
+	        var state_value = struct_exists(_state, key) ? _state[$ key] : undefined;
+
+	        if (is_struct(condition_data) && struct_exists(condition_data, "comparison") && struct_exists(condition_data, "value"))
+	        {
+	            // --- NUMERICAL CONDITION ---
+	            var operator = condition_data.comparison;
+	            var target_value = condition_data.value;
+
+	            if (state_value == undefined)
+				{
+	                error += MISSING_KEY_PENALTY;
+	                continue;
+	            }
+
+	            if (is_numeric(state_value) && is_numeric(target_value))
+	            {
+	                var gap = 0;
+
+	                switch (operator)
+	                {
+	                    case ">=": if (state_value < target_value) gap = target_value - state_value; break;
+	                    case "<=": if (state_value > target_value) gap = state_value - target_value; break;
+	                    case ">":  if (state_value <= target_value) gap = (target_value - state_value) + 1; break;
+	                    case "<":  if (state_value >= target_value) gap = (state_value - target_value) + 1; break;
+	                    case "=":  if (state_value != target_value) gap = abs(target_value - state_value); break;
+	                    default:   error += INVALID_NUMERIC_PENALTY; break;
+	                }
+
+	                error += gap;
+	            }
+	            else
+	            {
+	                planLog.logWarning($"heuristicScore: Invalid numeric comparison at key '{key}'. State='{string(state_value)}', Target='{string(target_value)}'");
+	                error += INVALID_NUMERIC_PENALTY;
+	            }
+	        }
+	        else
+	        {
+	            // --- SIMPLE VALUE CONDITION ---
+	            var expected_value = condition_data;
+
+	            if (state_value == undefined) {
+	                error += MISSING_KEY_PENALTY;
+	                continue;
+	            }
+
+	            if (state_value != expected_value)
+	            {
+	                // You can expand this to use specific penalties for some keys
+	                error += BASE_BOOLEAN_PENALTY;
+	            }
+	        }
+	    }
+
+	    return error;
+	}
+
+	
+	
 	
 	checkKeysMatch = function(_conditions_or_reactions, _state_to_check) // Renamed parameters for clarity
 	{
@@ -589,103 +649,110 @@ function plannerGOAP() constructor
 	
 	#region Secondary Helper Functions
 	
-	keyMatches = function(_source, _target, key) // _source is the state, _target is the condition/goal
+	
+	keyMatches = function(_state_to_check, _target_struct, _key_to_check)
 	{
-	    // Check if the key exists in the source state struct
-	    if (!struct_exists(_source, key))
-		{
-	        // Log if a required key isn't in the state
-	        Log.logDebug($"keyMatches: Key '{key}' not found in source state.");
-	        return false; // If the key doesn't exist in the state, the condition can't be met
-	    }
+	    // Check if the key exists in the state we are checking against
+	    if (!struct_exists(_state_to_check, _key_to_check))
+	    {
+	        // If the key isn't in the state, the condition isn't met.
+	        // planLog.logDebug($"keyMatches: Key '{_key_to_check}' not found in state."); // Optional debug
+	        return false;
+	    }
 
-	    // Get the value from the source state and the condition data from the target/condition struct
-	    var state_value = _source[$ key];
-	    var condition_data = _target[$ key]; // This holds the condition requirement
-
-	    // --- DEBUG: Log the key being checked and its format ---
-	    // You might want to add context here like "called for Goal Check" vs "called for Action Precondition"
-	    // if you modify checkKeysMatch to pass that context. For now, this is okay.
-	    // show_debug_message($"  keyMatches: Checking key '{key}'..."); 
-	    // show_debug_message($"    State Value: {string(state_value)} (Type: {typeof(state_value)})");
-	    // show_debug_message($"    Condition Data: {string(condition_data)} (Type: {typeof(condition_data)})");
+	    var state_value = _state_to_check[$ _key_to_check];
+	    var condition_definition = _target_struct[$ _key_to_check]; // Get the condition definition from the target struct (either goal or action conditions)
 
 
-	    // --- Check the format of the condition data ---
-	    if (is_struct(condition_data) && struct_exists(condition_data, "comparison") && struct_exists(condition_data, "value"))
-		{
-	        // It looks like our numerical comparison format: { comparison: "...", value: ... }
+	    // --- Handle Numerical Conditions (Condition definition is a struct with comparison and value) ---
+	    if (is_struct(condition_definition) && struct_exists(condition_definition, "comparison") && struct_exists(condition_definition, "value"))
+	    {
+	        var operator = condition_definition.comparison;
+	        var target_value = condition_definition.value;
 
-	        var operator = condition_data.comparison;
-	        var target_value = condition_data.value;
-
-
-	        // Ensure the state value and target value are numeric for comparisons
-	        if (!is_numeric(state_value) || !is_numeric(target_value))
-			{
-	             // Log warning if numerical comparison is attempted on non-numbers
-	            Log.logWarning($"keyMatches: Cannot perform numerical comparison for key '{key}'. State value '{string(state_value)}' or target value '{string(target_value)}' is not numeric.");
-	            return false;
-	        }
-
-	        // Perform the numerical comparison based on the operator string
-	        switch (operator)
-			{
-	            case ">=": var result = state_value >= target_value;return result;
-	            case "<=": var result = state_value <= target_value; return result;
-	            case ">":  var result = state_value > target_value; return result;
-	            case "<":  var result = state_value < target_value; return result;
-	            case "=":  var result = state_value == target_value; return result; // Your equality case
-	            //case "!=": var result = state_value != target_value; return result; // Assuming i added !=
-	            default:
-	                Log.logError($"keyMatches: Unknown comparison operator '{operator}' for key '{key}'.");
-	                return false;
-	        }
-
-		    } else {
-		        // If it's NOT the numerical comparison struct format, assume it's a simple direct value match
-		        // This handles booleans (true/false), strings, or exact numbers defined directly.
-
-	            // --- DEBUG simple match ---
-	             // show_debug_message($"    keyMatches: Simple check for '{key}'");
-	             // show_debug_message($"    Comparing State Value ({string(state_value)}) vs Condition Value ({string(condition_data)})");
-	            // --- END DEBUG ---
-
-		        return state_value == condition_data; // Correct for simple matches
-		    }
-	    // Note: No explicit return false needed after the if/else blocks, as all paths return.
-	}
-
-	simulateReactions = function(state, reactions)
-	{
-	    var new_state = variable_clone(state); // Always work on a copy!
-	    var keys = struct_get_names(reactions);
-	    for (var i = 0; i < array_length(keys); i++)
-		{
-	        var k = keys[i]; // The key (e.g., "Energy", "is_safe")
-	        var reaction_value = reactions[$ k]; // The value from the reaction data (-14, true, "alert")
-
-	        // --- Logic to handle different reaction types ---
-	        // You need a way to determine if this value represents a numerical CHANGE vs a direct SET.
-	        // The simplest way is often to check if it's a number AND if the corresponding state property *is also* numeric.
-
-	        if (is_numeric(reaction_value) && struct_exists(new_state, k) && is_numeric(new_state[$ k]))
-			{
-	            // If the reaction value is numeric, AND the key exists in the state AND its current state value is numeric,
-	            // assume this is a numerical CHANGE (+ or -)
-            
-	            new_state[$ k] += reaction_value; // Apply the numerical change (add or subtract)
-	        } else {
-	            // Otherwise (if it's a boolean, string, or a number for a non-numeric state property, or a new property),
-	            // treat it as a direct SET value.
-            
-	            new_state[$ k] = reaction_value; // Direct assignment
+	        // Ensure both state value and target value are numeric for numerical comparison
+	        if (!is_numeric(state_value) || !is_numeric(target_value))
+	        {
+	            // If either isn't numeric, the condition can't be numerically matched.
+	            planLog.logError($"keyMatches: Numerical comparison for key '{_key_to_check}' requires numeric values. State is '{string(state_value)}', Target is '{string(target_value)}'.");
+	            return false;
 	        }
-	        // --- End Logic ---
-	    }
-	    return new_state; // Return the new state with effects applied
-	}
 
+	        var result = false; // Initialize the boolean result for the comparison
+
+	        // Perform the numerical comparison based on the operator string
+	        switch (operator)
+	        {
+	            case ">=": result = state_value >= target_value; break;
+	            case "<=": result = state_value <= target_value; break;
+	            case ">":  result = state_value > target_value; break;
+	            case "<":  result = state_value < target_value; break;
+	            case "=":  result = state_value == target_value; break;
+	            case "!=": result = state_value != target_value; break; // Include != if you support it
+
+	            default:
+	                planLog.logError($"keyMatches: Unknown comparison operator '{operator}' for key '{_key_to_check}'.");
+	                return false; // An unknown operator means the condition is not met
+	        }
+
+	        return result; // Return the actual boolean result of the numerical comparison
+	    }
+	    // --- Handle Simple Boolean/Value Conditions (Condition definition is a direct value) ---
+	    else
+	    {
+	        var condition_value = condition_definition;
+
+	        // For simple conditions, the state value must exactly match the condition value.
+	        // We already checked if the key exists in the state.
+	        return state_value == condition_value;
+	    }
+	}
+	
+	// --- Simulate applying an action's reactions to a state ---
+    simulateReactions = function(_state, _reactions)
+    {
+        var new_state = variable_clone(_state); // Start with a copy of the current state
+        var reaction_keys = struct_get_names(_reactions);
+
+        for (var i = 0; i < array_length(reaction_keys); i++)
+        {
+            var key = reaction_keys[i];
+            var reaction_value = _reactions[$ key];
+
+            // Check if the state variable exists before attempting to modify it
+            // If the reaction is to add a new state variable, add it.
+            if (!struct_exists(new_state, key))
+			{
+                 new_state[$ key] = reaction_value;
+                 planLog.logDebug($"Simulating Reaction: Added new key '{key}' with value '{string(reaction_value)}'");
+                 continue; // Move to the next reaction
+            }
+
+            // --- CORRECTED LOGIC FOR APPLYING REACTIONS ---
+            // Prioritize setting boolean values if the reaction value is a boolean.
+            if (is_bool(reaction_value))
+            {
+                 new_state[$ key] = reaction_value; // Direct assignment for booleans
+                 planLog.logDebug($"Simulating Reaction: Key '{key}' set to boolean '{string(reaction_value)}'.");
+            }
+            // Handle numerical changes (+N, -N) ONLY if the reaction value is numeric AND the state value is numeric
+            else if (is_numeric(reaction_value) && is_numeric(new_state[$ key]))
+            {
+                new_state[$ key] += reaction_value; // Apply the numerical change (add or subtract)
+                planLog.logDebug($"Simulating Reaction: Key '{key}' numerical change by {string(reaction_value)}. New value: {string(new_state[$ key])}");
+            }
+            // For all other cases (strings, or numbers for non-numeric state properties, or direct number assignments),
+            // treat it as a direct SET value.
+            else
+            {
+                 new_state[$ key] = reaction_value; // Direct assignment
+                 planLog.logDebug($"Simulating Reaction: Key '{key}' set to '{string(reaction_value)}'.");
+            }
+
+
+        }
+        return new_state;
+    }
 
 	#endregion
 	
@@ -758,32 +825,32 @@ function plannerGOAP() constructor
 	expandNode = function(current, goal_state, actions, open_queue, visited_nodes)
 	{
 	    var keys = array_shuffle(struct_get_names(actions));
-	    //show_debug_message($"--- Expanding from State ID {current.ID} (g:{current.g}, h:{current.h}, f:{current.f}, Hash:{hashState(current.state)}) ---"); // Log current state details
-	    //show_debug_message($"Considering {array_length(keys)} actions.");
+	    show_debug_message($"--- Expanding from State ID {current.ID} (g:{current.g}, h:{current.h}, f:{current.f}, Hash:{hashState(current.state)}) ---"); // Log current state details
+	    show_debug_message($"Considering {array_length(keys)} actions.");
 
 	    for (var i = 0; i < array_length(keys); i++)
 	    {
 		    var action_name = keys[i];
 		    var action = actions[$ action_name];
-		    //show_debug_message($"  -> Considering Action: {action_name}");
+		    show_debug_message($"  -> Considering Action: {action_name}");
 
 		    // --- Check Conditions ---
 		    var preconditions_met = checkKeysMatch(action.conditions, current.state);
-		    //show_debug_message($"    Conditions Met: {preconditions_met}");
+		    show_debug_message($"    Conditions Met: {preconditions_met}");
 
 		    if (!preconditions_met)
 			{
 		        astarLog.nodes_failed++;
-		        //show_debug_message($"    Conditions NOT met for {action_name}. Skipping action.");
+		        show_debug_message($"    Conditions NOT met for {action_name}. Skipping action.");
 		        continue; // Skip this action, conditions not met
 		    }
 			// --- End Check Conditions ---
 
 			// --- Simulate Reactions ---
-		    //show_debug_message($"    Conditions MET. Simulating reactions for {action_name}...");
+		    show_debug_message($"    Conditions MET. Simulating reactions for {action_name}...");
 		    var new_state = simulateReactions(current.state, action.reactions);
-			//show_debug_message($"    Simulated New State (Hash): {hashState(new_state)}");
-		    // show_debug_message($"    Simulated New State (String): {string(new_state)}"); // Optional: Use string for potentially clearer view of contents
+			show_debug_message($"    Simulated New State (Hash): {hashState(new_state)}");
+		     show_debug_message($"    Simulated New State (String): {string(new_state)}"); // Optional: Use string for potentially clearer view of contents
 	        // Optional: Log specific state keys changing, e.g., show_debug_message($"    Energy after {action_name}: {new_state.Energy}");
 
 
@@ -792,28 +859,28 @@ function plannerGOAP() constructor
 		    if (struct_exists(visited_nodes, new_key))
 			{
 				var visited_node_id = visited_nodes[$ new_key]; // If you stored ID when marking visited
-				//show_debug_message($"    State (Hash: {new_key}) for {action_name} already visited (Node ID: {visited_node_id ? visited_node_id : "unknown" }). Skipping.");
+				show_debug_message($"    State (Hash: {new_key}) for {action_name} already visited (Node ID: {visited_node_id ? visited_node_id : "unknown" }). Skipping.");
 				continue; // Skip this state, already visited
 			}
 			// --- End Visited Node Check ---
 
-			// --- Calculate Costs and Heuristic ---
+			 //--- Calculate Costs and Heuristic ---
 		    var g2 = current.g + action.cost;
 		    var h2 = calculateHeuristic(new_state, goal_state); // Make sure calculateHeuristic uses hashState
 			var f2 = g2 + h2;
-		    //show_debug_message($"    Costs for {action_name} -> New State: g={g2}, h={h2}, f={f2}");
+		    show_debug_message($"    Costs for {action_name} -> New State: g={g2}, h={h2}, f={f2}");
 
-			// --- Create and Add New Node ---
+			 //--- Create and Add New Node ---
 		    var new_node = new astarNode(nextID++, new_state, action.name, g2, h2, current);
 		    ds_priority_add(open_queue, new_node, new_node.f);
 		    struct_set(visited_nodes, new_key, new_node.ID); // Store the node ID with the hash!
 		    astarLog.nodes_opened++;
-		    //show_debug_message($"    Added New Node ID {new_node.ID} (Hash: {new_key}) to Open Queue.");
+		    show_debug_message($"    Added New Node ID {new_node.ID} (Hash: {new_key}) to Open Queue.");
 
-		    // --- DEBUG LOG END FOR THIS ACTION ---
-		    //show_debug_message($"    ----------------------------------------");
+		     //--- DEBUG LOG END FOR THIS ACTION ---
+		    show_debug_message($"    ----------------------------------------");
 		}
-	    //show_debug_message($"--- Finished Expanding State ID {current.ID} ---");
+	    show_debug_message($"--- Finished Expanding State ID {current.ID} ---");
 	}
 	
 	
@@ -827,9 +894,9 @@ function plannerGOAP() constructor
 	        astarLog.nodes_processed++;
 
 	        // --- DEBUG GOAL CHECK ---
-	        //show_debug_message($"--- Checking Goal for State ID {current.ID} (Hash: {hashState(current.state)}) ---");
+	        show_debug_message($"--- Checking Goal for State ID {current.ID} (Hash: {hashState(current.state)}) ---");
 	        var goal_check_result = checkKeysMatch(goal_state, current.state);
-	        //show_debug_message($"Goal Check Result: {goal_check_result}");
+	        show_debug_message($"Goal Check Result: {goal_check_result}");
 	        // --- END DEBUG GOAL CHECK ---
 
 	        // If goal is reached
@@ -853,7 +920,7 @@ function plannerGOAP() constructor
                 var _str_names = getActionsForGoal(current); // Pass the goal node to getActionsForGoal
 
 	            // Debug log the final action names found
-	            //show_debug_message($"getActionsForGoal returned plan: {string(_str_names)}");
+	            show_debug_message($"getActionsForGoal returned plan: {string(_str_names)}");
 
 	            return _str_names; // Return array of action names
 	        }
