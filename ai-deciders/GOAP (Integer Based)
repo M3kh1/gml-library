@@ -690,8 +690,6 @@ function plannerGOAP() constructor
 	}
 
 
-	
-
 	#endregion
 	
 	
@@ -1207,5 +1205,146 @@ function goalGOAP(_name) : nodeGOAP(_name) constructor
 	
 }
 
+
+#endregion
+
+#region --- Example
+
+/*
+
+
+// --- Real World State Variables for the AI ---
+// These are the actual stats/flags the AI instance holds
+real_has_weapon = false;
+real_ammo = 0;
+real_scrap = 0; // Start with 0 scrap
+real_weapon_needs_repair = false; // Weapon is NOT broken if we don't have one
+
+
+// Create an instance of the GOAP brain
+goap_brain = new brainGOAP();
+
+// --- Define and Register Sensors ---
+// Sensor for HasWeapon (boolean)
+goap_brain.registerSensor("HasWeapon", function()
+{
+    return real_has_weapon; // Read the actual boolean stat
+});
+
+// Sensor for Ammo (numerical)
+goap_brain.registerSensor("Ammo", function()
+{
+    return real_ammo; // Read the actual numerical stat
+});
+
+// Sensor for Scrap (numerical)
+goap_brain.registerSensor("Scrap", function()
+{
+    return real_scrap; // Read the actual numerical stat
+});
+
+// Sensor for WeaponNeedsRepair (boolean)
+goap_brain.registerSensor("WeaponNeedsRepair", function()
+{
+    return real_weapon_needs_repair; // Read the actual boolean stat
+});
+
+
+// --- Define Goal ---
+// Goal: Have a weapon, enough ammo, and the weapon is NOT broken
+var goal_armed_and_ready = new goalGOAP("ArmedAndReady");
+// Goal conditions using numerical and simple formats
+goal_armed_and_ready.addSimpleCondition("HasWeapon", true);
+goal_armed_and_ready.addGreaterThanOrEqualToCondition("Ammo", 10);
+goal_armed_and_ready.addSimpleCondition("WeaponNeedsRepair", false); // Goal is NOT needing repair
+
+// Add the goal to the brain
+goap_brain.addGoal(goal_armed_and_ready);
+
+
+// Action: Find Weapon (Cost 10)
+var action_find_weapon = new actionGOAP("FindWeapon", 10);
+action_find_weapon.addSimpleCondition("HasWeapon", false);
+// Reactions: Gain weapon, and it needs repair
+action_find_weapon.addReaction("HasWeapon", true);
+action_find_weapon.addReaction("WeaponNeedsRepair", true);
+// onEntry: Change the real world state
+action_find_weapon.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
+{
+    show_debug_message("AI is finding a weapon...");
+    real_has_weapon = true;
+    real_weapon_needs_repair = true;
+});
+
+
+// Action: Collect Scrap (Cost 5)
+var action_collect_scrap = new actionGOAP("CollectScrap", 5);
+// Conditions: None for simplicity in this example
+//action_collect_scrap.addLessThanCondition("Scrap", 50);
+// Reaction: Gain 15 scrap
+action_collect_scrap.addReaction("Scrap", +15);
+// onEntry: Change the real world state
+action_collect_scrap.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
+{
+    show_debug_message("AI is collecting scrap...");
+    real_scrap += 15; // Add scrap to the real AI stat
+    show_debug_message("AI collected scrap. Total scrap: " + string(real_scrap));
+});
+
+
+// Action: Craft Ammo (Cost 8)
+var action_craft_ammo = new actionGOAP("CraftAmmo", 8);
+// Conditions: Need enough scrap, and need a weapon
+action_craft_ammo.addGreaterThanOrEqualToCondition("Scrap", 5);
+action_craft_ammo.addSimpleCondition("HasWeapon", true);
+// Reactions: Spend 5 scrap, gain 10 ammo
+action_craft_ammo.addReaction("Scrap", -5);
+action_craft_ammo.addReaction("Ammo", +10);
+// onEntry: Change the real world state
+action_craft_ammo.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
+{
+    show_debug_message("AI is crafting ammo...");
+    real_scrap -= 5; // Deduct scrap from real AI stat
+    real_ammo += 10; // Add ammo to real AI stat
+    show_debug_message("AI crafted ammo. Scrap: " + string(real_scrap) + ", Ammo: " + string(real_ammo));
+});
+
+
+// Action: Repair Weapon (Cost 12)
+var action_repair_weapon = new actionGOAP("RepairWeapon", 12);
+// Conditions: Weapon needs repair, need enough scrap, need a weapon
+action_repair_weapon.addSimpleCondition("WeaponNeedsRepair", true);
+action_repair_weapon.addGreaterThanOrEqualToCondition("Scrap", 10);
+action_repair_weapon.addSimpleCondition("HasWeapon", true);
+// Reactions: Spend 10 scrap, weapon no longer needs repair
+action_repair_weapon.addReaction("Scrap", -10);
+action_repair_weapon.addReaction("WeaponNeedsRepair", false);
+// onEntry: Change the real world state
+action_repair_weapon.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
+{
+    show_debug_message("AI is repairing weapon...");
+    real_scrap -= 10; // Deduct scrap from real AI stat
+    real_weapon_needs_repair = false; // Set weapon as repaired
+    show_debug_message("AI repaired weapon. Scrap: " + string(real_scrap) + ", Needs Repair: " + string(real_weapon_needs_repair));
+});
+
+
+// Add actions to the brain
+goap_brain.addActionsByArray([
+    action_find_weapon,
+    action_collect_scrap,
+    action_craft_ammo,
+    action_repair_weapon
+]);
+
+
+// --- Set the Target Goal ---
+goap_brain.setTargetGoal("ArmedAndReady");
+
+show_debug_message("Starting GOAP brain with 'Get Armed' goal...");
+goap_brain.generatePlan();
+// In your Step event, you would then call goap_brain.runPlan();
+
+*/
 
 #endregion
