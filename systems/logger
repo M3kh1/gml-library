@@ -89,11 +89,14 @@ function Logger(_name="Logger", _showLog=true, _showLevels=[LogLevel.debug, LogL
 		
 		var _st = current_time;
 		
-		method_call(_func, _args);
+		var _result = method_call(_func, _args);
 		
 		var _et = current_time - _st;
 		
 		logProfile($"{_tag} took ({_et} ms).");
+		
+		return _result;
+		
 	}
 	
 	printLog = function(_lvl)
