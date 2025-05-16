@@ -12,10 +12,6 @@
 	
 */
 
-// Started : 4:00 PM on April 25, 2025.
-// Ended 9:00 PM on April 25, 2025
-
-
 
 function brainGOAP() constructor
 {
@@ -32,7 +28,6 @@ function brainGOAP() constructor
 	planner = new plannerGOAP(); 
 	plan = [];
 	currentActionIndex = 0;  // init action index
-	
 	
 	
 	#region Primary User Functions
@@ -85,7 +80,6 @@ function brainGOAP() constructor
 		}
 	}
 	
-	
 	registerSensor = function(_name, _func)
 	{
 		
@@ -98,7 +92,6 @@ function brainGOAP() constructor
 		struct_set(sensors, _name, _func);
 		
 	}
-	
 	
 	getSensorData = function(_name)
 	{
@@ -113,7 +106,6 @@ function brainGOAP() constructor
 		return _sensor();
 		
 	}
-	
 	
 	setTargetGoal = function(_goalName)
 	{
@@ -130,11 +122,18 @@ function brainGOAP() constructor
 		
 	}
 	
+
+	#endregion
+
+	#region --- Base Helper Functions ---
+	
+	
 	initPlan = function(_plan=[])
 	{
 		plan = _plan;
 		currentActionIndex = 0;
 	}
+	
 	
 	generatePlan = function()
 	{
@@ -166,14 +165,6 @@ function brainGOAP() constructor
 		
 	    return true;
 	}
-
-
-
-	#endregion
-
-	#region ALL Helper Functions
-	
-	#region -- Base Helper Functions
 	
 	captureSensorSnapshot = function()
 	{
@@ -220,11 +211,6 @@ function brainGOAP() constructor
 		
 	}
 	
-	/// pruneActionsByGoal(actions, goal_state)
-	/// @param actions - struct of all actions
-	/// @param goal_state - struct of goal state keys/values
-	/// @returns a new struct with only actions that affect the goal
-
 	pruneActionsByGoal = function(actions, goal_state)
 	{
 	    var pruned_actions = {};
@@ -262,7 +248,6 @@ function brainGOAP() constructor
 	    return pruned_actions;
 	}
 
-	
 	drawSensors = function(_x, _y)
 	{
 		var _sensor_names = struct_get_names(sensors);
@@ -280,210 +265,139 @@ function brainGOAP() constructor
 	
 	#endregion
 	
-	#region --- FSM Helper Functions ---
+	#region		<Run the Plan>
 	
-	shouldInterruptAction = function(_act)
+	checkReactionDelta = function(startState, endState, expectedChanges)
 	{
-		var _result = !planner.checkKeysMatch(_act.conditions, captureSensorSnapshot()) && _act.isInterruptible;	
-		return _result;
-	}
+	    var keys = struct_get_names(expectedChanges);
 
-	handleActionInterruption = function(_act)
-	{
-	    
-		Log.logWarning($"Regenerating Plan: Preconditions no longer valid (Interrupting) {plan[currentActionIndex]}");
-		
-	    // Standard GOAP interruption sequence
-	    _act.cleanup();  
-    
-	    generatePlan();   // Generate new plan
-	    fsm.setState("start");  // Transition out of executing
-	}
-
-	isActionComplete = function(_act)
-	{
-		
-		var _goapReactionsMet = planner.checkKeysMatch(_act.reactions, captureSensorSnapshot());
-		
-		if (!_goapReactionsMet)
-		{
-	        //Log.logWarning($"Action '{_act.name}' not completed. Reactions not met.");
-	    }
-		
-		return _goapReactionsMet; // Action is complete if reactions are met
-		
-	}
-
-	onActionCompleted = function(_act)
-	{
-		Log.logInfo($"Action completed successfully: {plan[currentActionIndex]}");
-
-	    // Final cleanup for completed action
-	    _act.cleanup();
-		
-	    // Move to the next action or finish the plan
-	    currentActionIndex++;
-	    if (currentActionIndex >= array_length(plan))
+	    for (var i = 0; i < array_length(keys); i++)
 	    {
-	        fsm.setState("finished");  // Plan complete
+	        var key = keys[i];
+
+	        if (!struct_exists(startState, key) || !struct_exists(endState, key))
+	        {
+	            show_debug_message("Missing key: " + key);
+	            return false;
+	        }
+
+	        var expected = expectedChanges[$ key];
+	        var startVal = startState[$ key];
+	        var endVal = endState[$ key];
+
+	        // If expected is bool, just compare directly
+	        if (is_bool(expected))
+	        {
+	            if (endVal != expected) return false;
+	        }
+	        else
+	        {
+	            var delta = endVal - startVal;
+	            if (delta != expected && endVal != expected) return false;
+	        }
 	    }
-	    else
-	    {
-	        var _nextAct = struct_get(actions, plan[currentActionIndex]);
-	        _nextAct.doOnEntry();  // Start next action
-	        fsm.setState("executing");  // Continue executing
-	    }
+
+	    return true;
 	}
-
-	isCommittedActionFailed = function(_act)
+	
+	goalComplete = function()
 	{
-		var _goapReactionsMet = planner.checkKeysMatch(_act.reactions, captureSensorSnapshot());
-		
-		return !_act.isInterruptible && !_goapReactionsMet && !_act.isRunning(); // Check if action is committed and failed
-		
-	}
-
-	onActionFailed = function(_act)
-	{
-	    
-		Log.logWarning($"Failed to execute action: {plan[currentActionIndex]}");
-
-	    // Cleanup for failed committed action
-	    _act.cleanup();
-    
-	    // Replan since the goal wasn't met
+	    show_debug_message("[GOAP] Goal complete!");
 	    generatePlan();
-	    fsm.setState("start");  // Transition out of executing after failure
+	}
+
+	handleFailure = function()
+	{
+	    show_debug_message("[GOAP] Plan failed.");
+	    generatePlan();
+		
+	}
+
+	handleInterruption = function()
+	{
+	    show_debug_message("[GOAP] Plan interrupted. Replanning...");
+	    generatePlan();
 	}
 	
-	#endregion
-	
-	#endregion
-	
-	
-	#region		<Planner FSM>
-	
-	fsm = new fsmSYS("GOAP Planner State");
-	var _start_state = new state_fsmSYS("start");
-	var _executing_state = new state_fsmSYS("executing");
-	var _finished_state = new state_fsmSYS("finished");
-	
-	fsmLog = new Logger("GOAP/Planner/fsm", true, [LogLevel.debug]);
-	
-	
-	_start_state.setOnUpdateCallback(function()
+
+	doPlan = function()
 	{
-	    // Check if the goal is already satisfied
+	    // 1. Is the Goal Already Achieved?
 	    if (planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
 	    {
-	        
-			fsmLog.logDebug("Target goal already met. Skipping plan generation.");
-	        return; // Skip plan generation if goal is already satisfied
+	        return; // No plan needed
 	    }
 
-	    // If the goal is not satisfied, generate a new plan
-	    if (array_length(plan) <= 0)
+	    // 2. Is There a Valid Plan?
+	    if (plan == undefined || array_length(plan) == 0)
 	    {
-			fsmLog.logDebug("No plan found — generating...");
-			
 	        generatePlan();
 	        return;
 	    }
-		
-	    // --- Check if the NEXT action in the plan has valid preconditions AT THIS MOMENT ---
-	    currentActionIndex = 0; // Make sure we are checking the start of the current plan
-	    if (currentActionIndex >= array_length(plan)) // Safety check
-	    {
-	        fsmLog.logWarning("Plan became empty unexpectedly. Regenerating.");
-	        generatePlan(); // Try to get a plan
-	        return; // Stay in start state
-	    }
 
-	    var _act = struct_get(actions, plan[currentActionIndex]);
-	    var currentStateForCheck = captureSensorSnapshot(); // Get current state NOW
-
-	    // Check if the preconditions for THIS action are met in the CURRENT world state
-	    if (!planner.checkKeysMatch(_act.conditions, currentStateForCheck)) // <-- This is the check
+	    // 3. Are we done with the plan?
+	    if (currentActionIndex >= array_length(plan))
 	    {
-	        // Preconditions are false for the next action in the plan BEFORE STARTING IT!
-	        Log.logWarning($"Plan's first action ({_act.name}) has invalid preconditions in the current world state. Regenerating.");
-	        // Do NOT call doOnEntry or transition to executing
-	        generatePlan(); // Generate a NEW plan from the CURRENT state
-	        // Stay in the start state to evaluate the NEW plan next frame
+	        goalComplete(); // Plan success
 	        return;
 	    }
-	    // --- END Check ---
 
+	    // 4. Get the Current Action
+	    var _actionName = plan[currentActionIndex];
 
-	    // If we reached here, the next action's preconditions ARE met.
-	    // NOW it's safe to start the action.
-	    fsmLog.logDebug($"Starting action: {_act.name}");
-	    _act.doOnEntry(); // Call entry hook ONLY if conditions are met
-	    fsm.setState("executing"); // Transition to executing
-		
-	});
-
-
-	_executing_state.setOnUpdateCallback(function()
-	{
-	    var _act = struct_get(actions, plan[currentActionIndex]);
-
-	    // --- Check for Immediate Interruption ---
-	    if (shouldInterruptAction(_act))
+	    if (!struct_exists(actions, _actionName))
 	    {
-	        handleActionInterruption(_act);
-	        return; // Action interrupted, exit update callback
-	    }
-		
-
-	    // --- If Not Interrupted, Execute Action Step ---
-	    _act.execute();
-
-	    // --- Check for Completion After Execution ---
-	    if (isActionComplete(_act))
-	    {
-	        onActionCompleted(_act);
-	        return; // Action completed, exit update callback
+	        show_debug_message($"[GOAP] ERROR: Action '{_actionName}' does not exist.");
+	        handleFailure(); // Exit or replan
+	        return;
 	    }
 
-	    // --- Handle Committed Actions that Fail Objective ---
-	    if (isCommittedActionFailed(_act))
+	    var _action = actions[$ _actionName];
+
+	    // 5. Preconditions must hold
+	    if (!planner.checkKeysMatch(_action.conditions, captureSensorSnapshot()))
 	    {
-	        onActionFailed(_act);
-	        return; // Action failed, exit update callback
+	        show_debug_message($"[GOAP] Preconditions failed for '{_actionName}'. Replanning...");
+	        generatePlan();
+	        return;
 	    }
 
-	    // If none of the above, the action is still running, waiting for completion.
-	});
+	    // 6. If action hasn't started, take snapshot
+	    _action.startSnapshot = captureSensorSnapshot();
+	    
 
+	    // 7. Execute the action (assumed synchronous call per frame)
+		_action.execute();
 
-	_finished_state.setOnEnterCallback(function()
-	{
-		fsmLog.logDebug("GOAP plan complete.");
-	
-	    // Only generate a new plan if the goal is not satisfied
-	    if (!planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
-	    {
-	        generatePlan(); // Only replan if the goal needs it
-	    }
+		// 8. Check for completion first
+		if (checkReactionDelta(_action.startSnapshot, captureSensorSnapshot(), _action.reactions))
+		{
+		    show_debug_message($"[GOAP] '{_actionName}' completed.");
+		    currentActionIndex++;
 
-	    fsm.setState("start");
-	});
+		    // Optional: clear snapshot so action resets if reused
+		    _action.startSnapshot = undefined;
 
-	// Setup Planner FSM 
-	fsm.addStatesByArray([_start_state, _executing_state, _finished_state]);
-	fsm.setState("start");
-	
-	runPlan = function()
-	{
-		
-		fsmLog.doProfile("fsm.run",fsm.run);
+		    if (currentActionIndex >= array_length(plan))
+		    {
+		        goalComplete();
+		    }
+
+		    return; // Exit early so no interruption is falsely detected
+		}
+
+		// 9. Then check for interruption
+		if (_action.isInterruptible && !planner.checkKeysMatch(_action.conditions, captureSensorSnapshot()))
+		{
+		    show_debug_message($"[GOAP] '{_actionName}' was interrupted.");
+		    handleInterruption();
+		    return;
+		}
+
 	}
-	
-	
-	
+
 	#endregion
-	
+
 }
 
 
@@ -534,7 +448,7 @@ function plannerGOAP() constructor
 	}
 
 	
-	#region Primary Helper Functions
+	#region	--- Helper Functions ---
 
 	
 	heuristicScore = function(_state, _goal)
@@ -623,65 +537,24 @@ function plannerGOAP() constructor
 	    return true; // If all keys matched, the whole set matches
 	}
 
-    reconstructPath = function(_node)
-	{
-        var path = [];
-        while (_node.parent != undefined)
-		{
-            array_insert(path, 0, _node);
-            _node = _node.parent;
-			
-        }
-        return path;
-    }
-	
-	getActionsForGoal = function(goal_node) // goal_node is the final astarNode
+	reconstructPath = function(goal_node) // goal_node is the final astarNode
 	{
 	    var actions = []; // This array will store ACTION NAMES (strings)
-		
 	    // Start from the goal node and walk back through parents
 	    var current = goal_node; // 'current' should be an astarNode
 
-	    // --- DEBUG Start of Path Reconstruction ---
 	    if (current == undefined)
 		{
-	        //show_debug_message("getActionsForGoal: Started with undefined goal_node!"); // Should not happen if a path was found
+	        //show_debug_message("reconstructPath: Started with undefined goal_node!"); // Should not happen if a path was found
 	        return [];
 	    }
-	    //show_debug_message($"getActionsForGoal: Starting reconstruction from node ID {current.ID}");
-	    // --- END DEBUG ---
 
 	    // While current node is valid and has a parent (i.e., not the start node)
 	    while (current != undefined && current.parent != undefined) // <-- Error is reported on this line
 		{
-		    // --- DEBUG Inside Reconstruction Loop ---
-		    //show_debug_message($"  getActionsForGoal: Checking node ID {current.ID}");
-		    //show_debug_message($"    Parent property: Type = {typeof(current.parent)}, Value = {string(current.parent)}"); // Log parent's type and value
-
-		    // Add checks for unexpected types just before the line where error happens
-		    if (is_string(current.parent))
-			{
-		        //show_debug_message($"  getActionsForGoal: ERROR DETECTED - Parent is a string! Value: {string(current.parent)}");
-		        // This is the state we suspect leads to the error
-		        // You might need to break or return here to prevent the crash if it's about to happen
-		        //break; // Uncomment to break the loop
-		    }
-		    if (!is_struct(current.parent) && current.parent != undefined)
-			{
-		        //show_debug_message($"  getActionsForGoal: ERROR DETECTED - Parent is defined but not a constructor! Type: {typeof(current.parent)}, Value: {string(current.parent)}");
-		        // break; // Uncomment to break the loop
-		    }
-		    // --- END DEBUG ---
-
-
 	        array_push(actions, current.action); // Collect the action NAME (string)
 	        current = current.parent; // Move up to the parent node
 	    }
-
-	    // --- DEBUG End of Loop ---
-	    //show_debug_message("getActionsForGoal: Finished loop.");
-	    //show_debug_message($"Final 'current' after loop: Type = {typeof(current)}, Value = {string(current)}"); // Should be undefined
-	    // --- END DEBUG ---
 
 	    // The actions are collected in reverse order, so reverse them for correct sequence
 	    actions = array_reverse(actions); // Array of strings
@@ -690,11 +563,6 @@ function plannerGOAP() constructor
 	}
 
 
-	#endregion
-	
-	
-	#region Secondary Helper Functions
-	
 	// Generate a unique cache key for a given start state and goal conditions.
 	// This key is used to store and retrieve plans from the plan_cache.
 	generateCacheKey = function(_startState, _goalConditions)
@@ -811,26 +679,6 @@ function plannerGOAP() constructor
         }
         return new_state;
     }
-
-	#endregion
-	
-	
-	#region		<Planning>
-	
-	
-	function astarNode(_id, _state, _action, _g, _h, _parent) constructor
-	{
-	    ID      = _id;                    // unique numeric
-	    state   = variable_clone(_state);    // 
-	    action  = _action;                // string name
-	    g       = _g;                     // accumulated cost
-	    h       = _h;                     // heuristic
-	    f       = _g + _h;                // total score
-	    parent  = _parent;                // link to another astarNode
-	}
-	
-	
-	#region		Helper Functions for createPlan
 	
 	
 	initStartNode = function(start_state, goal_state)
@@ -922,8 +770,6 @@ function plannerGOAP() constructor
 	}
 
 	
-	
-	
 	processPlanningLoop = function(start_state, open_queue, visited_nodes, goal_state, actions)
 	{
 		var MAX_PLANNING_STEPS = 10000; //If it hits 10,000 nodes then the search space is too large.
@@ -932,12 +778,7 @@ function plannerGOAP() constructor
 	        var current = ds_priority_delete_min(open_queue); // Get the best node
 	        astarLog.nodes_processed++;
 
-	        // --- DEBUG GOAL CHECK ---
-	        //show_debug_message($"--- Checking Goal for State ID {current.ID} (Hash: {hashState(current.state)}) ---");
 	        var goal_check_result = checkKeysMatch(goal_state, current.state);
-	        //show_debug_message($"Goal Check Result: {goal_check_result}");
-	        // --- END DEBUG GOAL CHECK ---
-
 	        // If goal is reached
 	        if (goal_check_result)
 	        {
@@ -945,15 +786,12 @@ function plannerGOAP() constructor
 	            astarLog.time_took = current_time - astarLog.time_took;
 	            ds_priority_destroy(open_queue);
 
-                var _str_names = getActionsForGoal(current); // Pass the goal node to getActionsForGoal
+                var _str_names = reconstructPath(current); // Pass the goal node to reconstructPath
 				
 				// --- Cache the found plan ---
 				var cache_key = generateCacheKey(start_state, goal_state); // Use the GOAL state for caching
 				struct_set(plan_cache, cache_key, _str_names);
 				planLog.logInfo($"Plan cached for state/goal: {cache_key}");
-
-	            // Debug log the final action names found
-	            //show_debug_message($"getActionsForGoal returned plan: {string(_str_names)}");
 
 	            return _str_names; // Return array of action names
 	        }
@@ -973,8 +811,20 @@ function plannerGOAP() constructor
 	    return []; // Return an empty plan
 	}
 
-
+	
 	#endregion
+	
+	
+	function astarNode(_id, _state, _action, _g, _h, _parent) constructor
+	{
+	    ID      = _id;                    // unique numeric
+	    state   = variable_clone(_state);    // 
+	    action  = _action;                // string name
+	    g       = _g;                     // accumulated cost
+	    h       = _h;                     // heuristic
+	    f       = _g + _h;                // total score
+	    parent  = _parent;                // link to another astarNode
+	}
 	
 	
 	createPlan = function(_start_state, _goal_state, _actions)
@@ -1007,8 +857,6 @@ function plannerGOAP() constructor
 		return _finalPlan;	//	return a array with names of the actions as strings
 	}
 
-	
-	#endregion
 	
 }
 
@@ -1072,24 +920,13 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 {
 	cost = _cost;
 	reactions = {};
-	isInterruptible = true;
+	isInterruptible = false;
 	
 	
 	status = actionStatus.idle; //idle, running, success, failure
 	
-	#region		-- Setup the custom user functoins
-	
-	// Optional functions 
 	executeFunction = undefined;
-	onEntryFunc = undefined;
-	onExitFunc = undefined;
 	
-	// Flags to track whether onEntry and onExit have been executed
-    onEntryDone = false;
-    onExitDone = false;
-	started = false;
-	
-	#endregion
 	
 	#region		--- Public User Functions
 	
@@ -1105,32 +942,17 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 		struct_set(reactions, _name, _val);
 	}
 	
-	
-	
-	// Function to set the execution logic
     setExecuteFunction = function(_func)
 	{
         executeFunction = _func;  // Set the function that executes the action
     }
     
-	setEntryFunction = function(_func)
-	{
-		onEntryFunc = _func;
-	}
-	
-	setExitFunction = function(_func)
-	{
-		onExitFunc = _func;
-	}
-	
 	canBeInterrupted = function(_val)
 	{
 		isInterruptible = _val;
 	}
 
 	#endregion	
-	
-	#region		-- Doing the custom user functions
 	
     // Function to execute the action
     execute = function()
@@ -1142,60 +964,11 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
         
     }
 	
-	// Ensure onEntry is only done once
-    doOnEntry = function()
-    {
-		started = true;
-		if showDebug and !onEntryDone show_debug_message($"ENTERING Action: {name}");
-        if (onEntryFunc != undefined && !onEntryDone)
-        {
-            onEntryFunc();  // Call the on entry hook function
-            onEntryDone = true;  // Set the flag to true after calling the function
-			status = actionStatus.running;
-        }
-    }
-    
-    // Ensure onExit is only done once
-    doOnExit = function()
-    {
-		started = false;
-		
-		if showDebug and !onExitDone show_debug_message($"EXITING Action: {name}");
-        if (onExitFunc != undefined && !onExitDone)
-        {
-            onExitFunc();  // Call the on exit hook function
-            onExitDone = true;  // Set the flag to true after calling the function
-			
-			if (status == actionStatus.running)
-	        {
-	            status = actionStatus.success; // assume success unless changed manually, ie. failure
-	        }
-			
-			
-        }
-    }
-    
-	cleanup = function()
-	{
-		doOnExit();
-		reset();
-	}
-	
-	#endregion
 	
 	isRunning = function()
 	{
 		return (status == actionStatus.running);
 	}
-	
-    // Reset the flags when the action is completed or needs to reset
-    reset = function()
-    {
-        onEntryDone = false;
-        onExitDone = false;
-		started = false;
-		status = actionStatus.idle;
-    }
 	
 }
 
@@ -1203,10 +976,13 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 function goalGOAP(_name) : nodeGOAP(_name) constructor
 {
 	
+	
+	
 }
 
 
 #endregion
+
 
 #region --- Example
 
@@ -1269,11 +1045,12 @@ action_find_weapon.addSimpleCondition("HasWeapon", false);
 action_find_weapon.addReaction("HasWeapon", true);
 action_find_weapon.addReaction("WeaponNeedsRepair", true);
 // onEntry: Change the real world state
-action_find_weapon.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
+action_find_weapon.setExecuteFunction(function() // Assuming AI instance accessible via 'self' or passed
 {
     show_debug_message("AI is finding a weapon...");
     real_has_weapon = true;
     real_weapon_needs_repair = true;
+	show_debug_message("AI is has a weapon");
 });
 
 
@@ -1284,7 +1061,7 @@ var action_collect_scrap = new actionGOAP("CollectScrap", 5);
 // Reaction: Gain 15 scrap
 action_collect_scrap.addReaction("Scrap", +15);
 // onEntry: Change the real world state
-action_collect_scrap.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
+action_collect_scrap.setExecuteFunction(function() // Assuming AI instance accessible via 'self' or passed
 {
     show_debug_message("AI is collecting scrap...");
     real_scrap += 15; // Add scrap to the real AI stat
@@ -1301,11 +1078,12 @@ action_craft_ammo.addSimpleCondition("HasWeapon", true);
 action_craft_ammo.addReaction("Scrap", -5);
 action_craft_ammo.addReaction("Ammo", +10);
 // onEntry: Change the real world state
-action_craft_ammo.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
+action_craft_ammo.setExecuteFunction(function()
 {
     show_debug_message("AI is crafting ammo...");
     real_scrap -= 5; // Deduct scrap from real AI stat
     real_ammo += 10; // Add ammo to real AI stat
+	show_debug_message($"AI crafting ammo: Scrap: {real_scrap}, Ammo: {real_ammo}");
     show_debug_message("AI crafted ammo. Scrap: " + string(real_scrap) + ", Ammo: " + string(real_ammo));
 });
 
@@ -1320,7 +1098,7 @@ action_repair_weapon.addSimpleCondition("HasWeapon", true);
 action_repair_weapon.addReaction("Scrap", -10);
 action_repair_weapon.addReaction("WeaponNeedsRepair", false);
 // onEntry: Change the real world state
-action_repair_weapon.setEntryFunction(function() // Assuming AI instance accessible via 'self' or passed
+action_repair_weapon.setExecuteFunction(function()
 {
     show_debug_message("AI is repairing weapon...");
     real_scrap -= 10; // Deduct scrap from real AI stat
@@ -1348,3 +1126,4 @@ goap_brain.generatePlan();
 */
 
 #endregion
+
