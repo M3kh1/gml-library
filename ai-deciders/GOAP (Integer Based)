@@ -9,6 +9,14 @@
 
 	The agent doesn’t plan every bite of food with GOAP —
 	It just planned to get to the fridge.
+
+
+	Add These:
+	
+	one thing im thinking is 
+	setTimer
+	setTargetPosition() or setTargetObject()
+	for animations maybe a animation manager?
 	
 */
 
@@ -267,6 +275,8 @@ function brainGOAP() constructor
 	
 	#region		<Run the Plan>
 	
+	LogPlanExe = new Logger("GOAP/Brain/Plan-Executor", true, [LogLevel.warning]);
+	
 	checkReactionDelta = function(startState, endState, expectedChanges)
 	{
 	    var keys = struct_get_names(expectedChanges);
@@ -302,20 +312,21 @@ function brainGOAP() constructor
 	
 	goalComplete = function()
 	{
-	    show_debug_message("[GOAP] Goal complete!");
+	    //show_debug_message("[GOAP] Goal complete!");
+		LogPlanExe.logInfo($"Plan Completed For Goal: {targetGoal.name}");
 	    generatePlan();
 	}
 
 	handleFailure = function()
 	{
-	    show_debug_message("[GOAP] Plan failed.");
+	    //show_debug_message("[GOAP] Plan failed.");
 	    generatePlan();
 		
 	}
 
 	handleInterruption = function()
 	{
-	    show_debug_message("[GOAP] Plan interrupted. Replanning...");
+	    //show_debug_message("[GOAP] Plan interrupted. Replanning...");
 	    generatePlan();
 	}
 	
@@ -325,12 +336,14 @@ function brainGOAP() constructor
 	    // 1. Is the Goal Already Achieved?
 	    if (planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
 	    {
+			LogPlanExe.logInfo($"Target Goal: {targetGoal.name} Already Completed.");
 	        return; // No plan needed
 	    }
 
 	    // 2. Is There a Valid Plan?
 	    if (plan == undefined || array_length(plan) == 0)
 	    {
+			LogPlanExe.logWarning("Plan isnt valid.");
 	        generatePlan();
 	        return;
 	    }
@@ -347,7 +360,7 @@ function brainGOAP() constructor
 
 	    if (!struct_exists(actions, _actionName))
 	    {
-	        show_debug_message($"[GOAP] ERROR: Action '{_actionName}' does not exist.");
+			LogPlanExe.logWarning($"Action '{_actionName}' does not exist.");
 	        handleFailure(); // Exit or replan
 	        return;
 	    }
@@ -357,7 +370,7 @@ function brainGOAP() constructor
 	    // 5. Preconditions must hold
 	    if (!planner.checkKeysMatch(_action.conditions, captureSensorSnapshot()))
 	    {
-	        show_debug_message($"[GOAP] Preconditions failed for '{_actionName}'. Replanning...");
+			LogPlanExe.logDebug($"Preconditions failed for '{_actionName}'. Replanning...");
 	        generatePlan();
 	        return;
 	    }
@@ -372,7 +385,7 @@ function brainGOAP() constructor
 		// 8. Check for completion first
 		if (checkReactionDelta(_action.startSnapshot, captureSensorSnapshot(), _action.reactions))
 		{
-		    show_debug_message($"[GOAP] '{_actionName}' completed.");
+			LogPlanExe.logInfo($"[GOAP] '{_actionName}' completed.");
 		    currentActionIndex++;
 
 		    // Optional: clear snapshot so action resets if reused
@@ -389,7 +402,7 @@ function brainGOAP() constructor
 		// 9. Then check for interruption
 		if (_action.isInterruptible && !planner.checkKeysMatch(_action.conditions, captureSensorSnapshot()))
 		{
-		    show_debug_message($"[GOAP] '{_actionName}' was interrupted.");
+			LogPlanExe.logInfo($"[GOAP] '{_actionName}' was interrupted.");
 		    handleInterruption();
 		    return;
 		}
@@ -908,6 +921,7 @@ function nodeGOAP(_name) constructor
 	
 }
 
+
 enum actionStatus
 {
 	idle,
@@ -915,6 +929,7 @@ enum actionStatus
 	success,
 	failure,
 }
+
 
 function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 {
