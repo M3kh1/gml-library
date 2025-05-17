@@ -492,7 +492,7 @@ function brainGOAP() constructor
 
 function plannerGOAP() constructor
 {
-	planLog = new Logger("GOAP/Planner", true, [LogLevel.info]);
+	planLog = new Logger("GOAP/Planner", true, [LogLevel.info, LogLevel.profile]);
 	
     heuristic_cache = {};   // Cache for heuristic values
     plan_cache = {};        // Cache for previously generated plans
@@ -509,8 +509,6 @@ function plannerGOAP() constructor
 		time_took: 0,
 	}
 	
-	// best node heuristic + cost
-	best_f = infinity;
 	
 	
 	default_log = variable_clone(astarLog);
@@ -551,6 +549,27 @@ function plannerGOAP() constructor
 	
 	
 	#region	--- Helper Functions ---
+
+	
+	hashState = function(_state)
+	{
+	    var keys = struct_get_names(_state);
+	    array_sort(keys, true); // VERY IMPORTANT: Sort keys alphabetically
+	    var str = "{";
+	    for (var i = 0; i < array_length(keys); i++)
+		{
+	        var key = keys[i];
+	        var value = _state[$ key];
+	        str += string(key) + ":" + string(value); // Convert key and value to string consistently
+	        if (i < array_length(keys) - 1)
+			{
+	            str += ",";
+	        }
+	    }
+	    str += "}"; // Add delimiters to the start/end for clarity
+	    return str;
+	}
+	
 
 	
 	checkKeysMatch = function(_conditions_or_reactions, _state_to_check) // Renamed parameters for clarity
@@ -668,6 +687,8 @@ function plannerGOAP() constructor
 	// --- Simulate applying an action's reactions to a state ---
     simulateReactions = function(_state, _reactions)
     {
+		//show_debug_message("simulating");
+		
         var new_state = variable_clone(_state); // Start with a copy of the current state
         var reaction_keys = struct_get_names(_reactions);
 
@@ -718,13 +739,16 @@ function plannerGOAP() constructor
 	    return new astarNode(0, start_state, "", 0, h, undefined);
 	}
 	
+	
 	statesNearlyEqual = function(_a, _b, _tolerance)
 	{
 	    var keys_a = struct_get_names(_a);
 	    var keys_b = struct_get_names(_b);
 
+	    // Early out: Different key counts mean not equal
 	    if (array_length(keys_a) != array_length(keys_b)) return false;
 
+	    // Check keys in _a vs _b
 	    for (var i = 0; i < array_length(keys_a); i++)
 	    {
 	        var key = keys_a[i];
@@ -744,10 +768,84 @@ function plannerGOAP() constructor
 	        }
 	    }
 
+	    // Symmetric: Check keys in _b vs _a (optional if keys match, but safe)
+	    for (var i = 0; i < array_length(keys_b); i++)
+	    {
+	        var key = keys_b[i];
+
+	        if (!struct_exists(_a, key)) return false;
+
+	        var val_a = _a[$ key];
+	        var val_b = _b[$ key];
+
+	        if (is_numeric(val_a) && is_numeric(val_b))
+	        {
+	            if (abs(val_a - val_b) > _tolerance) return false;
+	        }
+	        else if (val_a != val_b)
+	        {
+	            return false;
+	        }
+	    }
+
 	    return true;
 	}
 
 	
+
+	/// @desc Returns the number of differing key-value pairs between two state structs.
+	statesDiff = function(_a, _b)
+	{
+	    var keys_a = struct_get_names(_a);
+	    var keys_b = struct_get_names(_b);
+
+	    // Collect unique keys from both structs
+	    var unique_keys = [];
+
+	    for (var i = 0; i < array_length(keys_a); i++)
+	    {
+	        var k = keys_a[i];
+	        if (!array_contains(unique_keys, k)) array_push(unique_keys, k);
+	    }
+
+	    for (var i = 0; i < array_length(keys_b); i++)
+	    {
+	        var k = keys_b[i];
+	        if (!array_contains(unique_keys, k)) array_push(unique_keys, k);
+	    }
+
+	    // Compare values
+	    var total_diff = 0;
+
+	    for (var i = 0; i < array_length(unique_keys); i++)
+	    {
+	        var k = unique_keys[i];
+
+	        var has_a = struct_exists(_a, k);
+	        var has_b = struct_exists(_b, k);
+
+	        if (!has_a || !has_b)
+	        {
+	            total_diff++;
+	            continue;
+	        }
+
+	        var val_a = _a[$ k];
+	        var val_b = _b[$ k];
+
+	        if (is_numeric(val_a) && is_numeric(val_b))
+	        {
+	            if (abs(val_a - val_b) > 0.01) total_diff++;
+	        }
+	        else if (val_a != val_b)
+	        {
+	            total_diff++;
+	        }
+	    }
+
+	    return total_diff;
+	}
+
 	
 	doesSatisfyGoal = function(current_state, goal_state)
 	{
@@ -766,97 +864,95 @@ function plannerGOAP() constructor
 	}
 
 	
-	
 	heuristicScore = function(_state, _goal)
-	{		
-	    var error = 0;
+{		
+    var error = 0;
 
+    // Penalty constants
+    var BASE_BOOLEAN_PENALTY = 30;
+    var MISSING_KEY_PENALTY = 20;
+    var INVALID_NUMERIC_PENALTY = 100;
 
-	    // Penalty constants
-	    var BASE_BOOLEAN_PENALTY = 30;
-	    var MISSING_KEY_PENALTY = 30;
-	    var INVALID_NUMERIC_PENALTY = 50;
-		
+    var countBooleanMismatches = 0;
+    var countMissingKeys = 0;
 
-	    var goalKeys = struct_get_names(_goal);
-    
-	    for (var i = 0; i < array_length(goalKeys); i++)
-		{
-			
-	        var key = goalKeys[i];
-	        var conditionData = _goal[$ key];
-	        var stateValue = struct_exists(_state, key) ? _state[$ key] : undefined;
+    var goalKeys = struct_get_names(_goal);
 
+    for (var i = 0; i < array_length(goalKeys); i++)
+    {
+        var key = goalKeys[i];
+        var conditionData = _goal[$ key];
+        var stateValue = struct_exists(_state, key) ? _state[$ key] : undefined;
 
-	        // Handle numerical comparisons
-	        if (is_struct(conditionData))
-			{
-	            var operator = conditionData.comparison;
-	            var targetValue = conditionData.value;
+        if (is_struct(conditionData))
+        {
+            var operator = conditionData.comparison;
+            var targetValue = conditionData.value;
 
-	            if (stateValue == undefined)
-				{
-	                error += MISSING_KEY_PENALTY;
-	                continue;
-	            }
+            if (stateValue == undefined)
+            {
+                countMissingKeys++;
+                continue;
+            }
 
-	            if (is_numeric(stateValue) && is_numeric(targetValue))
-				{
-	                var gap = 0;
-                
-	                switch (operator)
-					{
-						
-	                    case ">=": gap = max(targetValue - stateValue, 0); break;
-	                    case "<=": gap = max(stateValue - targetValue, 0); break;
-	                    case ">":  gap = stateValue <= targetValue ? (targetValue - stateValue) + 1 : 0; break;
-	                    case "<":  gap = stateValue >= targetValue ? (stateValue - targetValue) + 1 : 0; break;
-	                    case "=":  gap = abs(targetValue - stateValue); break;
-	                    default: error += INVALID_NUMERIC_PENALTY; break;
-						
-	                }
+            if (is_numeric(stateValue) && is_numeric(targetValue))
+            {
+                var gap = 0;
 
-	                //error += power(gap, 1.1);
-	                //error += 1;
-	                //error += gap;
+                switch (operator)
+                {
+                    case ">=": gap = max(targetValue - stateValue, 0); break;
+                    case "<=": gap = max(stateValue - targetValue, 0); break;
+                    case ">":  gap = stateValue <= targetValue ? (targetValue - stateValue) + 1 : 0; break;
+                    case "<":  gap = stateValue >= targetValue ? (stateValue - targetValue) + 1 : 0; break;
+                    case "=":  gap = abs(targetValue - stateValue); break;
+                    default: error += INVALID_NUMERIC_PENALTY; break;
+                }
+
+                if (gap > 0)
+                {
+                    if (gap < 2) error += gap;
+                    else error += gap * 1.75;
 					
-					if (gap == 0) continue;
-					
-					show_debug_message($"Gap: {gap}");
-					var factor = (gap < 3) ? 1 : 1;
-					error += power(gap, factor);
-
-					
-	            }
-				else {
-	                planLog.logWarning($"heuristicScore: Invalid numeric comparison at key '${key}'. State='${string(stateValue)}', Target='${string(targetValue)}'");
-	                error += INVALID_NUMERIC_PENALTY;
-	            }
+                }
 				
-	        } else {
+				//if (gap > 0)
+				//{
+				//    var gapRatio = gap / max(abs(targetValue), 1);
+				//    error += gapRatio;
+				//}
+
 				
-				// Handle simple value conditions
-				 
-	            var expectedValue = conditionData;
+            }
+            else {
+                planLog.logWarning($"heuristicScore: Invalid numeric comparison at key '${key}'. State='${string(stateValue)}', Target='${string(targetValue)}'");
+                error += INVALID_NUMERIC_PENALTY;
+            }
+        }
+        else
+        {
+            var expectedValue = conditionData;
 
-	            if (stateValue == undefined)
-				{
-	                error += MISSING_KEY_PENALTY;
-	                continue;
-	            }
+            if (stateValue == undefined)
+            {
+                countMissingKeys++;
+                continue;
+            }
 
-	            if (stateValue != expectedValue)
-				{
-	                error += BASE_BOOLEAN_PENALTY;
-	            }
-				
-	        }
-			
-			
-	    }
+            if (stateValue != expectedValue)
+            {
+                countBooleanMismatches++;
+            }
+        }
+    }
 
-	    return error;
-	}
+    // Add boolean and missing key penalties *after* counting
+    error += BASE_BOOLEAN_PENALTY * countBooleanMismatches;
+    error += MISSING_KEY_PENALTY * countMissingKeys;
+
+    return error;
+}
+
 
 
 	calculateHeuristic = function(state, goal)
@@ -903,33 +999,62 @@ function plannerGOAP() constructor
 	}
 	
 
-	hashState = function(_state)
+	// inverse of worsens state
+	bettersState = function(currentState, resultState, goalState)
 	{
-	    var keys = struct_get_names(_state);
-	    array_sort(keys, true); // VERY IMPORTANT: Sort keys alphabetically
-	    var str = "{";
-	    for (var i = 0; i < array_length(keys); i++)
+	    var currentH = heuristicScore(currentState, goalState);
+	    var resultH  = heuristicScore(resultState, goalState);
+	    return resultH < currentH;
+	}
+	
+	
+	neutralState = function(currentState, resultState, goalState, epsilon = 0.01)
+	{
+	    var currentH = heuristicScore(currentState, goalState);
+	    var resultH  = heuristicScore(resultState, goalState);
+	    return abs(resultH - currentH) < epsilon;
+	}
+
+
+
+	
+	
+	pruneStats = {
+	  neutral_state: 0,
+	  visited_states: 0,
+	  heuristicTooHigh: 0,
+	  worsenedState: 0,
+	  ancestorLoop: 0,
+	  nearlySame: 0,
+	  conditionsNotMet: 0
+	}
+	
+	resetPruneStats = function()
+	{
+		pruneStats = 
 		{
-	        var key = keys[i];
-	        var value = _state[$ key];
-	        str += string(key) + ":" + string(value); // Convert key and value to string consistently
-	        if (i < array_length(keys) - 1)
-			{
-	            str += ",";
-	        }
-	    }
-	    str += "}"; // Add delimiters to the start/end for clarity
-	    return str;
+			neutral_state: 0,
+			visited_states: 0,
+			heuristicTooHigh: 0,
+			worsenedState: 0,
+			ancestorLoop: 0,
+			nearlySame: 0,
+			conditionsNotMet: 0
+		}
 	}
 	
 	
 	
-	expandNode = function(current, goal_state, actions, open_queue, visited_nodes)
+	
+	expandNode = function(current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f)
 	{
-		var keys = array_shuffle(struct_get_names(actions));
-	    //var keys = struct_get_names(actions);
+		//show_debug_message("Trying to expand node");
+		
+		//var keys = array_shuffle(struct_get_names(actions));
+	    var keys = struct_get_names(actions);
 		
 	    var scored_actions = [];
+		
 
 		for (var i = 0; i < array_length(keys); i++)
 		{
@@ -937,65 +1062,116 @@ function plannerGOAP() constructor
 		    var action = actions[$ action_name];
 
 			
-		    if (!checkKeysMatch(action.conditions, current.state))
+		    
+		    //if (!planLog.doProfile("checkKeysMatch", checkKeysMatch, [action.conditions, current.state]))
+			if (!checkKeysMatch(action.conditions, current.state))
 			{
 				//show_debug_message("Keys dont match");
+				pruneStats.conditionsNotMet++;
 		        astarLog.nodes_failed++;
 		        continue; // Discard this action: conditions not met
 		    }
 			
+			var new_state;
 			
-		    var new_state = simulateReactions(current.state, action.reactions);
-			
-			
-			//if (ancestorHasState(current, new_state))
-			//{
-			//	//show_debug_message("Ancestor has state - in loop.");
-			//	astarLog.nodes_failed++;
-			//	continue;
-			//}
-			
-			
-			if doesSatisfyGoal(new_state, goal_state)
+			var reaction_key = hashState(current.state) + "|" + action_name;
+			if (struct_exists(reaction_cache, reaction_key))
 			{
+			    new_state = reaction_cache[$ reaction_key];
+				show_debug_message("Got reaction cache.");
+				//show_debug_message($"React Key: {reaction_key}");
+			} else {
+			    new_state = simulateReactions(current.state, action.reactions);
+			    struct_set(reaction_cache, reaction_key, new_state);
 				
-				show_debug_message("Simulated State meets GOAL.");
-				
-				return;
+				//show_debug_message($"React Key: {reaction_key}");
 			}
-			
-			
-			if (worsensState(new_state, current.state, goal_state)) 
+
+
+			var _new_hash = hashState(new_state);
+			if struct_exists(visited_states, _new_hash)
 			{
-				//show_debug_message("Worsens the state");
+				// State already seen, prune this node
+				//show_debug_message("Visited this state alrdy.");
+			    pruneStats.visited_states++;
+			    astarLog.nodes_failed++;
+			    continue;
+			}
+		
+			
+			if (neutralState(new_state, current.state, goal_state, 0.01)) 
+			{
+				//show_debug_message("States are just abt the same");
+				pruneStats.neutral_state++;
 		        astarLog.nodes_failed++;
 		        continue; // prune this action early
 		    }
 			
 			
-			if (statesNearlyEqual(new_state, current.state, 2))
+			
+			//if (!planLog.doProfile("bettersState", bettersState, [current.state, new_state, goal_state]))
+			if (!bettersState(current.state, new_state, goal_state))
 			{
-				//show_debug_message("Sates are too similar, pruning this node.");
-				astarLog.nodes_failed++;
+				//show_debug_message("Doesnt better the state");
+				pruneStats.worsenedState++;
+		        astarLog.nodes_failed++;
 				continue;
 			}
+			
+			
+			//if (planLog.doProfile("worsensState",worsensState, [new_state, current.state, goal_state])) 
+			if (worsensState(new_state, current.state, goal_state)) 
+			{
+				//show_debug_message("Worsens the state");
+				pruneStats.worsenedState++;
+		        astarLog.nodes_failed++;
+		        continue; // prune this action early
+		    }
 			
 			
 		    var heuristic = heuristicScore(new_state, goal_state);
 			
 			
-			if (heuristic > best_f || heuristic > current.h)
+			////if (heuristic > best_f || heuristic > current.h)
+			if (heuristic > best_f  || heuristic > current.h)
 		    {
 				show_debug_message("Heuristic did not improve — pruning.");
+				pruneStats.heuristicTooHigh++;
 		        astarLog.nodes_failed++;
 		        continue;
 		    }
+			
+			
+			
+			// numericly similar
+			//if (planLog.doProfile("statesNearlyEqual", statesNearlyEqual, [new_state, current.state, 2]))
+			if (statesNearlyEqual(new_state, current.state, 2))
+			{
+				//show_debug_message("Sates are too similar, pruning this node.");
+				pruneStats.nearlySame++;
+				astarLog.nodes_failed++;
+				continue;
+			}
+			
+			// adds 0-1 ms so DONT do this UNLESS you abs. have to 
+			//if (planLog.doProfile("ancestorHasState",ancestorHasState, [current, new_state]))
+			//{
+			//	//show_debug_message("Ancestor has state - in loop.");
+			//	pruneStats.ancestorLoop++;
+			//	astarLog.nodes_failed++;
+			//	continue;
+			//}
+			
+			
+			struct_set(visited_states, _new_hash, true);
 			
 			
 		    array_push(scored_actions, { name: action_name, state: new_state, heuristic: heuristic, action: action });
 		}
 
 		// Sort by heuristic (lower is better)
+		//array_sort(scored_actions, function(a, b) { return (b.heuristic - a.heuristic); });
+		
 		array_sort(scored_actions, function(a, b) { return (a.heuristic - b.heuristic); });
 		
 
@@ -1005,6 +1181,7 @@ function plannerGOAP() constructor
 		    var entry = scored_actions[i];
 		    var g2 = current.g + entry.action.cost;
 		    var f2 = g2 + entry.heuristic;
+			
 			
 
 	        // PRUNE: skip nodes worse than best known solution
@@ -1021,25 +1198,62 @@ function plannerGOAP() constructor
 			{
 		        var existing = visited_nodes[$ new_key];
 				//show_debug_message("Alrdy Visited the node b4.");
-				astarLog.nodes_failed++;
-		        if (existing.g <= g2) continue; // Discard if a cheaper or equal-cost path already visited
+				
+		        if (existing.g < g2)
+				{
+					//show_debug_message("Pruning node on insertion: existing cheaper path found.");
+					astarLog.nodes_failed++;
+					continue; // Discard if a cheaper or equal-cost path already visited
+				}
+				//if (existing.f <= f2) continue;
 		    }
 
 		    var new_node = new astarNode(nextID++, entry.state, entry.name, g2, entry.heuristic, current);
 		    ds_priority_add(open_queue, new_node, new_node.f);
+			
+			// Right before adding node to queue:
+			//show_debug_message("Adding new node with g=" + string(g2) + ", f=" + string(f2));
+
 		    struct_set(visited_nodes, new_key, { g: g2, f: f2, node: new_node });
 		    astarLog.nodes_opened++;
 		}
+		
+		show_debug_message("Prune Stats: "+string(pruneStats));
+		resetPruneStats();
 
 	}
 	
 	
+	
 	processPlanningLoop = function(start_state, open_queue, visited_nodes, goal_state, actions)
 	{
+		var reaction_cache = {};
+	    var scored_actions = [];
+		var visited_states = {};
+		
+		// best node heuristic + cost
+		var best_f = infinity;
+	
+
+		
 		var MAX_PLANNING_STEPS = 10000; //If it hits 10,000 nodes then the search space is too large.
 	    while (!ds_priority_empty(open_queue) && astarLog.nodes_processed < MAX_PLANNING_STEPS)
 	    {
 	        var current = ds_priority_delete_min(open_queue); // Get the best node
+			
+			var current_key = hashState(current.state);
+	        if (struct_exists(visited_nodes, current_key))
+	        {
+	            var best = visited_nodes[$ current_key];
+	            if (current.g > best.g)
+	            {
+	                // This node is outdated (worse path), skip it
+					show_debug_message("This node is outdated (worse path), skip it");
+	                astarLog.nodes_failed++;
+	                continue;  // Skip to next iteration (pop another node)
+	            }
+	        }
+			
 	        astarLog.nodes_processed++;
 
 	        var goal_check_result = checkKeysMatch(goal_state, current.state);
@@ -1060,18 +1274,9 @@ function plannerGOAP() constructor
 	            astarLog.time_took = current_time - astarLog.time_took;
 	            ds_priority_destroy(open_queue);
 				
-				var _str_names;
+				var _str_names = reconstructPath(current); // Pass the goal node to reconstructPath
 				
-				//if best_solution != undefined
-				//{
-				//	_str_names = reconstructPath(best_solution);
-				//} else {
-				//	_str_names = reconstructPath(current); // Pass the goal node to reconstructPath
-				//}
-
-				
-				_str_names = reconstructPath(current); // Pass the goal node to reconstructPath
-				
+				//var _str_names = planLog.doProfile("reconstructPath", reconstructPath, [current]);
 				
 				// --- Cache the found plan ---
 				var cache_key = generateCacheKey(start_state, goal_state); // Use the GOAL state for caching
@@ -1082,9 +1287,9 @@ function plannerGOAP() constructor
 	        }
 
 	        // If goal not reached, expand the current node
-	        //expandNode(current, goal_state, actions, open_queue, visited_nodes);
+	        expandNode(current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f);
 			
-			planLog.doProfile("expandNode", expandNode, [current, goal_state, actions, open_queue, visited_nodes]);
+			//planLog.doProfile("expandNode", expandNode, [current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f]);
 			
 	    }
 		
@@ -1115,6 +1320,8 @@ function plannerGOAP() constructor
 	
 	createPlan = function(_start_state, _goal_state, _actions)
 	{
+		
+		show_debug_message("Create Plan started...");
 	    resetLog();
 	    astarLog.time_took = current_time;
 
@@ -1136,10 +1343,10 @@ function plannerGOAP() constructor
 	    ds_priority_add(open_queue, start_node, start_node.f);
 		
 	    struct_set(visited_nodes, hashState(_start_state), { g: start_node.g, f: start_node.f, node: start_node });
-
+		
 	    //var _finalPlan = processPlanningLoop(_start_state, open_queue, visited_nodes, _goal_state, _actions);
 		var _finalPlan = planLog.doProfile("processPlanningLoop", processPlanningLoop, [_start_state, open_queue, visited_nodes, _goal_state, _actions]);
-
+		
 		endAstarLog();
 		
 		return _finalPlan;	//	return a array with names of the actions as strings
