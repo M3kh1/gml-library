@@ -1,7 +1,7 @@
 
+
 // When creating goap actions think:
 /*
-
 	GOAP gets you to the party.
 	The party handles itself.
 	
@@ -20,10 +20,12 @@
 	
 */
 
+randomize();
+
 
 function brainGOAP() constructor
 {
-	randomize();
+	
 	
 	actions = {};
 	goals = {};
@@ -219,6 +221,7 @@ function brainGOAP() constructor
 		
 	}
 	
+	
 	pruneActionsByGoal = function(actions, goal_state)
 	{
 	    var pruned_actions = {};
@@ -234,6 +237,7 @@ function brainGOAP() constructor
 	        var effects_keys = struct_get_names(action.reactions); // Assuming 'reactions' holds effects
         
 	        var relevant = false;
+			
 	        for (var k = 0; k < array_length(effects_keys); k++)
 			{
 	            var effect_key = effects_keys[k];
@@ -249,12 +253,12 @@ function brainGOAP() constructor
 	            }
 	        }
         
-	        if (relevant) {
-	            pruned_actions[$ action_name] = action;
-	        }
+	        if (relevant) pruned_actions[$ action_name] = action;
+	        
 	    }
 	    return pruned_actions;
 	}
+	
 
 	drawSensors = function(_x, _y)
 	{
@@ -330,6 +334,60 @@ function brainGOAP() constructor
 	    generatePlan();
 	}
 	
+	
+	hasReachedTarget = function(target)
+	{
+	    var target_x, target_y;
+		var tolerance = 0;
+
+	    // Handle both object and position input
+	    if (instance_exists(target))
+	    {
+	        target_x = target.x;
+	        target_y = target.y;
+	    }
+	    else if (is_array(target) && array_length(target) == 2)
+	    {
+	        target_x = target[0];
+	        target_y = target[1];
+	    }
+	    else
+	    {
+	        show_debug_message("Invalid target type passed to hasReachedTarget()");
+	        return true;
+	    }
+
+	    var dist = point_distance(x, y, target_x, target_y);
+	    return (dist <= tolerance); // Adjust tolerance as needed
+	}
+
+	
+	moveTowardTarget = function(target, spd = 2)
+	{
+	    var target_x, target_y;
+
+	    if (instance_exists(target))
+	    {
+	        target_x = target.x;
+	        target_y = target.y;
+	    }
+	    else if (is_array(target) && array_length(target) == 2)
+	    {
+	        target_x = target[0];
+	        target_y = target[1];
+	    }
+	    else
+	    {
+	        show_debug_message("Invalid target type passed to moveTowardTarget()");
+	        return;
+	    }
+
+	    var angle = point_direction(x, y, target_x, target_y);
+	    x += lengthdir_x(spd, angle);
+	    y += lengthdir_y(spd, angle);
+	}
+
+	
 
 	doPlan = function()
 	{
@@ -375,12 +433,29 @@ function brainGOAP() constructor
 	        return;
 	    }
 
+
+		// 6. Target: handle MoveBeforePerforming gate
+	    if (_action.targetMode == actionTargetMode.MoveBeforePerforming)
+	    {
+	        if (!hasReachedTarget(_action.target))
+	        {
+	            moveTowardTarget(_action.target);
+	            return; // Don't execute until we arrive
+	        }
+	    }
+	    else if (_action.targetMode == actionTargetMode.PerformWhileMoving)
+	    {
+	        moveTowardTarget(_action.target);
+	    }
+
 	    // 6. If action hasn't started, take snapshot
 	    _action.startSnapshot = captureSensorSnapshot();
 	    
+		
 
-	    // 7. Execute the action (assumed synchronous call per frame)
+	    // 7. Execute the action 
 		_action.execute();
+		
 
 		// 8. Check for completion first
 		if (checkReactionDelta(_action.startSnapshot, captureSensorSnapshot(), _action.reactions))
@@ -414,22 +489,29 @@ function brainGOAP() constructor
 }
 
 
+
 function plannerGOAP() constructor
 {
-	planLog = new Logger("GOAP/Planner", true, [LogLevel.info, LogLevel.profile]);
+	planLog = new Logger("GOAP/Planner", true, [LogLevel.info]);
 	
     heuristic_cache = {};   // Cache for heuristic values
     plan_cache = {};        // Cache for previously generated plans
+	
+	best_solution = undefined;
 	
     nextID = 1;
 	
 	astarLog = {
 	    nodes_opened: 0,
 	    nodes_failed: 0,
+		failure_rate: 0,
 	    nodes_processed: 0,
-	    actions_evaluated: 0,
-		time_took: 0
+		time_took: 0,
 	}
+	
+	// best node heuristic + cost
+	best_f = infinity;
+	
 	
 	default_log = variable_clone(astarLog);
 	
@@ -459,82 +541,18 @@ function plannerGOAP() constructor
 		}
 		show_debug_message("--------------------------");
 	}
-
+	
+	endAstarLog = function()
+	{
+		astarLog.failure_rate = astarLog.nodes_failed / (astarLog.nodes_failed + astarLog.nodes_processed);
+		
+		printLog();
+	}
+	
 	
 	#region	--- Helper Functions ---
 
 	
-	heuristicScore = function(_state, _goal)
-	{
-	    var error = 0;
-
-	    var BASE_BOOLEAN_PENALTY = 10;
-	    var MISSING_KEY_PENALTY = 50;
-	    var INVALID_NUMERIC_PENALTY = 100;
-
-	    var goal_keys = struct_get_names(_goal);
-	    for (var i = 0; i < array_length(goal_keys); i++)
-	    {
-	        var key = goal_keys[i];
-	        var condition_data = _goal[$ key];
-	        var state_value = struct_exists(_state, key) ? _state[$ key] : undefined;
-
-	        if (is_struct(condition_data) && struct_exists(condition_data, "comparison") && struct_exists(condition_data, "value"))
-	        {
-	            // --- NUMERICAL CONDITION ---
-	            var operator = condition_data.comparison;
-	            var target_value = condition_data.value;
-
-	            if (state_value == undefined)
-				{
-	                error += MISSING_KEY_PENALTY;
-	                continue;
-	            }
-
-	            if (is_numeric(state_value) && is_numeric(target_value))
-	            {
-	                var gap = 0;
-
-	                switch (operator)
-	                {
-	                    case ">=": if (state_value < target_value) gap = target_value - state_value; break;
-	                    case "<=": if (state_value > target_value) gap = state_value - target_value; break;
-	                    case ">":  if (state_value <= target_value) gap = (target_value - state_value) + 1; break;
-	                    case "<":  if (state_value >= target_value) gap = (state_value - target_value) + 1; break;
-	                    case "=":  if (state_value != target_value) gap = abs(target_value - state_value); break;
-	                    default:   error += INVALID_NUMERIC_PENALTY; break;
-	                }
-
-	                error += gap;
-	            }
-	            else
-	            {
-	                planLog.logWarning($"heuristicScore: Invalid numeric comparison at key '{key}'. State='{string(state_value)}', Target='{string(target_value)}'");
-	                error += INVALID_NUMERIC_PENALTY;
-	            }
-	        }
-	        else
-	        {
-	            // --- SIMPLE VALUE CONDITION ---
-	            var expected_value = condition_data;
-
-	            if (state_value == undefined)
-				{
-	                error += MISSING_KEY_PENALTY;
-	                continue;
-	            }
-
-	            if (state_value != expected_value)
-	            {
-	                // You can expand this to use specific penalties for some keys
-	                error += BASE_BOOLEAN_PENALTY;
-	            }
-	        }
-	    }
-
-	    return error;
-	}
-
 	checkKeysMatch = function(_conditions_or_reactions, _state_to_check) // Renamed parameters for clarity
 	{
 	    var _keys = struct_get_names(_conditions_or_reactions); // Iterate keys from the conditions/reactions set
@@ -588,6 +606,7 @@ function plannerGOAP() constructor
 		return start_state_hash + "|" + goal_conditions_hash; // Use a separator that won't appear in hashes
 	}
 	
+	
 	keyMatches = function(_state_to_check, _target_struct, _key_to_check)
 	{
 	    // Check if the key exists in the state we are checking against
@@ -626,7 +645,6 @@ function plannerGOAP() constructor
 	            case ">":  result = state_value > target_value; break;
 	            case "<":  result = state_value < target_value; break;
 	            case "=":  result = state_value == target_value; break;
-	            case "!=": result = state_value != target_value; break; // Include != if you support it
 
 	            default:
 	                planLog.logError($"keyMatches: Unknown comparison operator '{operator}' for key '{_key_to_check}'.");
@@ -699,6 +717,147 @@ function plannerGOAP() constructor
 	    var h = heuristicScore(start_state, goal_state);
 	    return new astarNode(0, start_state, "", 0, h, undefined);
 	}
+	
+	statesNearlyEqual = function(_a, _b, _tolerance)
+	{
+	    var keys_a = struct_get_names(_a);
+	    var keys_b = struct_get_names(_b);
+
+	    if (array_length(keys_a) != array_length(keys_b)) return false;
+
+	    for (var i = 0; i < array_length(keys_a); i++)
+	    {
+	        var key = keys_a[i];
+
+	        if (!struct_exists(_b, key)) return false;
+
+	        var val_a = _a[$ key];
+	        var val_b = _b[$ key];
+
+	        if (is_numeric(val_a) && is_numeric(val_b))
+	        {
+	            if (abs(val_a - val_b) > _tolerance) return false;
+	        }
+	        else if (val_a != val_b)
+	        {
+	            return false;
+	        }
+	    }
+
+	    return true;
+	}
+
+	
+	
+	doesSatisfyGoal = function(current_state, goal_state)
+	{
+		var keys = struct_get_names(goal_state);
+		
+		for(var i=0; i<array_length(keys); i++)
+		{
+			var key = keys[i];
+			
+	        if (!current_state[$ key] || current_state[$ key] != goal_state[$ key])
+			{
+	            return false;
+	        }
+	    }
+	    return true;
+	}
+
+	
+	
+	heuristicScore = function(_state, _goal)
+	{		
+	    var error = 0;
+
+
+	    // Penalty constants
+	    var BASE_BOOLEAN_PENALTY = 30;
+	    var MISSING_KEY_PENALTY = 30;
+	    var INVALID_NUMERIC_PENALTY = 50;
+		
+
+	    var goalKeys = struct_get_names(_goal);
+    
+	    for (var i = 0; i < array_length(goalKeys); i++)
+		{
+			
+	        var key = goalKeys[i];
+	        var conditionData = _goal[$ key];
+	        var stateValue = struct_exists(_state, key) ? _state[$ key] : undefined;
+
+
+	        // Handle numerical comparisons
+	        if (is_struct(conditionData))
+			{
+	            var operator = conditionData.comparison;
+	            var targetValue = conditionData.value;
+
+	            if (stateValue == undefined)
+				{
+	                error += MISSING_KEY_PENALTY;
+	                continue;
+	            }
+
+	            if (is_numeric(stateValue) && is_numeric(targetValue))
+				{
+	                var gap = 0;
+                
+	                switch (operator)
+					{
+						
+	                    case ">=": gap = max(targetValue - stateValue, 0); break;
+	                    case "<=": gap = max(stateValue - targetValue, 0); break;
+	                    case ">":  gap = stateValue <= targetValue ? (targetValue - stateValue) + 1 : 0; break;
+	                    case "<":  gap = stateValue >= targetValue ? (stateValue - targetValue) + 1 : 0; break;
+	                    case "=":  gap = abs(targetValue - stateValue); break;
+	                    default: error += INVALID_NUMERIC_PENALTY; break;
+						
+	                }
+
+	                //error += power(gap, 1.1);
+	                //error += 1;
+	                //error += gap;
+					
+					if (gap == 0) continue;
+					
+					show_debug_message($"Gap: {gap}");
+					var factor = (gap < 3) ? 1 : 1;
+					error += power(gap, factor);
+
+					
+	            }
+				else {
+	                planLog.logWarning($"heuristicScore: Invalid numeric comparison at key '${key}'. State='${string(stateValue)}', Target='${string(targetValue)}'");
+	                error += INVALID_NUMERIC_PENALTY;
+	            }
+				
+	        } else {
+				
+				// Handle simple value conditions
+				 
+	            var expectedValue = conditionData;
+
+	            if (stateValue == undefined)
+				{
+	                error += MISSING_KEY_PENALTY;
+	                continue;
+	            }
+
+	            if (stateValue != expectedValue)
+				{
+	                error += BASE_BOOLEAN_PENALTY;
+	            }
+				
+	        }
+			
+			
+	    }
+
+	    return error;
+	}
+
 
 	calculateHeuristic = function(state, goal)
 	{
@@ -716,6 +875,33 @@ function plannerGOAP() constructor
 	    struct_set(heuristic_cache, key, h);
 	    return h;
 	}
+
+
+	ancestorHasState = function(node, new_state)
+	{
+	    var new_key = hashState(new_state);
+
+	    while (node != undefined && node != noone)
+	    {
+	        var node_key = hashState(node.state);
+	        if (node_key == new_key)
+	        {
+	            return true;
+	        }
+	        node = node.parent;
+	    }
+
+	    return false;
+	}
+	
+
+	worsensState = function(new_state, current_state, goal_state)
+	{
+	    var new_h = heuristicScore(new_state, goal_state);
+	    var current_h = heuristicScore(current_state, goal_state);
+	    return new_h > current_h;
+	}
+	
 
 	hashState = function(_state)
 	{
@@ -737,51 +923,116 @@ function plannerGOAP() constructor
 	}
 	
 	
+	
 	expandNode = function(current, goal_state, actions, open_queue, visited_nodes)
 	{
-	    var keys = array_shuffle(struct_get_names(actions));
+		var keys = array_shuffle(struct_get_names(actions));
+	    //var keys = struct_get_names(actions);
+		
+	    var scored_actions = [];
 
-	    for (var i = 0; i < array_length(keys); i++)
-	    {
-	        var action_name = keys[i];
-	        var action = actions[$ action_name];
+		for (var i = 0; i < array_length(keys); i++)
+		{
+		    var action_name = keys[i];
+		    var action = actions[$ action_name];
 
-	        // --- Check Preconditions ---
-	        if (!checkKeysMatch(action.conditions, current.state))
-	        {
-	            astarLog.nodes_failed++;
-	            continue;
-	        }
-
-	        // --- Simulate Reactions ---
-	        var new_state = simulateReactions(current.state, action.reactions);
-	        var new_key = hashState(new_state);
-
-	        // --- Calculate Costs ---
-	        var g2 = current.g + action.cost;
-	        var h2 = calculateHeuristic(new_state, goal_state);
-	        var f2 = g2 + h2;
-
-	        // --- Check Visited ---
-	        if (struct_exists(visited_nodes, new_key))
-	        {
-	            var existing_entry = struct_get(visited_nodes, new_key);
-	            if (is_struct(existing_entry) && existing_entry.g <= g2)
-	            {
-	                continue; // Worse or equal path already exists
-	            }
-	        }
-
-	        // --- Create and Store New Node ---
-	        var new_node = new astarNode(nextID++, new_state, action.name, g2, h2, current);
-	        ds_priority_add(open_queue, new_node, new_node.f);
 			
-			struct_set(visited_nodes, new_key, {g: g2, f: f2, node: new_node});
+		    if (!checkKeysMatch(action.conditions, current.state))
+			{
+				//show_debug_message("Keys dont match");
+		        astarLog.nodes_failed++;
+		        continue; // Discard this action: conditions not met
+		    }
+			
+			
+		    var new_state = simulateReactions(current.state, action.reactions);
+			
+			
+			//if (ancestorHasState(current, new_state))
+			//{
+			//	//show_debug_message("Ancestor has state - in loop.");
+			//	astarLog.nodes_failed++;
+			//	continue;
+			//}
+			
+			
+			if doesSatisfyGoal(new_state, goal_state)
+			{
+				
+				show_debug_message("Simulated State meets GOAL.");
+				
+				return;
+			}
+			
+			
+			if (worsensState(new_state, current.state, goal_state)) 
+			{
+				//show_debug_message("Worsens the state");
+		        astarLog.nodes_failed++;
+		        continue; // prune this action early
+		    }
+			
+			
+			if (statesNearlyEqual(new_state, current.state, 2))
+			{
+				//show_debug_message("Sates are too similar, pruning this node.");
+				astarLog.nodes_failed++;
+				continue;
+			}
+			
+			
+		    var heuristic = heuristicScore(new_state, goal_state);
+			
+			
+			if (heuristic > best_f || heuristic > current.h)
+		    {
+				show_debug_message("Heuristic did not improve — pruning.");
+		        astarLog.nodes_failed++;
+		        continue;
+		    }
+			
+			
+		    array_push(scored_actions, { name: action_name, state: new_state, heuristic: heuristic, action: action });
+		}
 
-	        astarLog.nodes_opened++;
-	    }
+		// Sort by heuristic (lower is better)
+		array_sort(scored_actions, function(a, b) { return (a.heuristic - b.heuristic); });
+		
+
+		// Now insert into queue
+		for (var i = 0; i < array_length(scored_actions); i++)
+		{
+		    var entry = scored_actions[i];
+		    var g2 = current.g + entry.action.cost;
+		    var f2 = g2 + entry.heuristic;
+			
+
+	        // PRUNE: skip nodes worse than best known solution
+			//show_debug_message($"f2:{f2} >= best_f:{best_f}");
+	        if (f2 >= best_f)
+			{
+				show_debug_message($"Pruned Node cus f2:{f2} >= best_f:{best_f}");
+				astarLog.nodes_failed++;
+	            continue;
+			}
+			
+		    var new_key = hashState(entry.state);
+		    if (struct_exists(visited_nodes, new_key))
+			{
+		        var existing = visited_nodes[$ new_key];
+				//show_debug_message("Alrdy Visited the node b4.");
+				astarLog.nodes_failed++;
+		        if (existing.g <= g2) continue; // Discard if a cheaper or equal-cost path already visited
+		    }
+
+		    var new_node = new astarNode(nextID++, entry.state, entry.name, g2, entry.heuristic, current);
+		    ds_priority_add(open_queue, new_node, new_node.f);
+		    struct_set(visited_nodes, new_key, { g: g2, f: f2, node: new_node });
+		    astarLog.nodes_opened++;
+		}
+
 	}
-
+	
 	
 	processPlanningLoop = function(start_state, open_queue, visited_nodes, goal_state, actions)
 	{
@@ -795,11 +1046,32 @@ function plannerGOAP() constructor
 	        // If goal is reached
 	        if (goal_check_result)
 	        {
+				
+				// Update best_f to this solution's f-value
+				var current_f = current.g + current.h;  // or current.f if you have it
+				if (current_f < best_f)
+				{
+				    best_f = current_f;
+				    //show_debug_message($"Setting best_f to {best_f}");
+				}
+
+				
 	            //show_debug_message($"--- GOAL REACHED! State ID {current.ID} ---"); // Add success log
 	            astarLog.time_took = current_time - astarLog.time_took;
 	            ds_priority_destroy(open_queue);
+				
+				var _str_names;
+				
+				//if best_solution != undefined
+				//{
+				//	_str_names = reconstructPath(best_solution);
+				//} else {
+				//	_str_names = reconstructPath(current); // Pass the goal node to reconstructPath
+				//}
 
-                var _str_names = reconstructPath(current); // Pass the goal node to reconstructPath
+				
+				_str_names = reconstructPath(current); // Pass the goal node to reconstructPath
+				
 				
 				// --- Cache the found plan ---
 				var cache_key = generateCacheKey(start_state, goal_state); // Use the GOAL state for caching
@@ -823,6 +1095,7 @@ function plannerGOAP() constructor
 	    //show_debug_message("Process Planning Loop finished without finding a plan.");
 	    return []; // Return an empty plan
 	}
+
 
 	
 	#endregion
@@ -866,12 +1139,16 @@ function plannerGOAP() constructor
 
 	    //var _finalPlan = processPlanningLoop(_start_state, open_queue, visited_nodes, _goal_state, _actions);
 		var _finalPlan = planLog.doProfile("processPlanningLoop", processPlanningLoop, [_start_state, open_queue, visited_nodes, _goal_state, _actions]);
+
+		endAstarLog();
 		
 		return _finalPlan;	//	return a array with names of the actions as strings
 	}
 
+
 	
 }
+
 
 
 #region Node Stuff
@@ -930,6 +1207,12 @@ enum actionStatus
 	failure,
 }
 
+enum actionTargetMode
+{
+	none,
+	MoveBeforePerforming,
+	PerformWhileMoving,
+}
 
 function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 {
@@ -937,6 +1220,8 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 	reactions = {};
 	isInterruptible = false;
 	
+	target = undefined;
+	targetMode = actionTargetMode.none;
 	
 	status = actionStatus.idle; //idle, running, success, failure
 	
@@ -961,6 +1246,16 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 	{
         executeFunction = _func;  // Set the function that executes the action
     }
+	
+	
+	setTarget = function(_target, _mode=actionTargetMode.MoveBeforePerforming)
+	{
+		target = _target;
+		targetMode = _mode;
+	}
+	
+	
+	
     
 	canBeInterrupted = function(_val)
 	{
@@ -997,6 +1292,7 @@ function goalGOAP(_name) : nodeGOAP(_name) constructor
 
 
 #endregion
+
 
 
 #region --- Example
@@ -1141,4 +1437,5 @@ goap_brain.generatePlan();
 */
 
 #endregion
+
 
