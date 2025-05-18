@@ -153,7 +153,8 @@ function brainGOAP() constructor
 	    var goal_state = targetGoal.conditions;
 	    var available_actions = actions;
 		
-		var pruned_actions = pruneActionsByGoal(available_actions, goal_state);
+		
+		available_actions = pruneActionsByGoal(available_actions, goal_state);
 	    var new_plan = planner.createPlan(current_state, goal_state, available_actions);
 	    var plan_valid = (array_length(new_plan) > 0);
 
@@ -234,7 +235,7 @@ function brainGOAP() constructor
 	        var action = actions[$ action_name];
         
 	        // Check if action.effects change any key relevant to the goal
-	        var effects_keys = struct_get_names(action.reactions); // Assuming 'reactions' holds effects
+	        var effects_keys = struct_get_names(action.reactions);
         
 	        var relevant = false;
 			
@@ -733,9 +734,9 @@ function plannerGOAP() constructor
     }
 	
 	
-	initStartNode = function(start_state, goal_state)
+	initStartNode = function(start_state, goal_state, _actions)
 	{
-	    var h = heuristicScore(start_state, goal_state);
+	    var h = fullHeuristicScore(start_state, goal_state, _actions);
 	    return new astarNode(0, start_state, "", 0, h, undefined);
 	}
 	
@@ -793,168 +794,273 @@ function plannerGOAP() constructor
 
 	
 
-	/// @desc Returns the number of differing key-value pairs between two state structs.
-	statesDiff = function(_a, _b)
-	{
-	    var keys_a = struct_get_names(_a);
-	    var keys_b = struct_get_names(_b);
+	
+	
+	// old linear check
+	heuristicScore = function(_state, _goal)
+	{		
+	    var error = 0;
 
-	    // Collect unique keys from both structs
-	    var unique_keys = [];
+	    // Penalty constants
+	    var BASE_BOOLEAN_PENALTY = 30;
+	    var MISSING_KEY_PENALTY = 20;
+	    var INVALID_NUMERIC_PENALTY = 100;
 
-	    for (var i = 0; i < array_length(keys_a); i++)
+	    var countBooleanMismatches = 0;
+	    var countMissingKeys = 0;
+
+	    var goalKeys = struct_get_names(_goal);
+
+	    for (var i = 0; i < array_length(goalKeys); i++)
 	    {
-	        var k = keys_a[i];
-	        if (!array_contains(unique_keys, k)) array_push(unique_keys, k);
-	    }
+	        var key = goalKeys[i];
+	        var conditionData = _goal[$ key];
+	        var stateValue = struct_exists(_state, key) ? _state[$ key] : undefined;
 
-	    for (var i = 0; i < array_length(keys_b); i++)
-	    {
-	        var k = keys_b[i];
-	        if (!array_contains(unique_keys, k)) array_push(unique_keys, k);
-	    }
-
-	    // Compare values
-	    var total_diff = 0;
-
-	    for (var i = 0; i < array_length(unique_keys); i++)
-	    {
-	        var k = unique_keys[i];
-
-	        var has_a = struct_exists(_a, k);
-	        var has_b = struct_exists(_b, k);
-
-	        if (!has_a || !has_b)
+	        if (is_struct(conditionData))
 	        {
-	            total_diff++;
+	            var operator = conditionData.comparison;
+	            var targetValue = conditionData.value;
+
+	            if (stateValue == undefined)
+	            {
+	                countMissingKeys++;
+	                continue;
+	            }
+
+	            if (is_numeric(stateValue) && is_numeric(targetValue))
+	            {
+	                var gap = 0;
+
+	                switch (operator)
+	                {
+	                    case ">=": gap = max(targetValue - stateValue, 0); break;
+	                    case "<=": gap = max(stateValue - targetValue, 0); break;
+	                    case ">":  gap = stateValue <= targetValue ? (targetValue - stateValue) + 1 : 0; break;
+	                    case "<":  gap = stateValue >= targetValue ? (stateValue - targetValue) + 1 : 0; break;
+	                    case "=":  gap = abs(targetValue - stateValue); break;
+	                    default: error += INVALID_NUMERIC_PENALTY; break;
+	                }
+
+	                if (gap > 0)
+	                {
+	                    if (gap < 2) error += gap;
+	                    else error += gap * 1.75;
+					
+	                }
+				
+					//if (gap > 0)
+					//{
+					//    var gapRatio = gap / max(abs(targetValue), 1);
+					//    error += gapRatio;
+					//}
+
+				
+	            }
+	            else {
+	                planLog.logWarning($"heuristicScore: Invalid numeric comparison at key '${key}'. State='${string(stateValue)}', Target='${string(targetValue)}'");
+	                error += INVALID_NUMERIC_PENALTY;
+	            }
+	        }
+	        else
+	        {
+	            var expectedValue = conditionData;
+
+	            if (stateValue == undefined)
+	            {
+	                countMissingKeys++;
+	                continue;
+	            }
+
+	            if (stateValue != expectedValue)
+	            {
+	                countBooleanMismatches++;
+	            }
+	        }
+	    }
+
+	    // Add boolean and missing key penalties *after* counting
+	    error += BASE_BOOLEAN_PENALTY * countBooleanMismatches;
+	    error += MISSING_KEY_PENALTY * countMissingKeys;
+
+	    return error;
+	}
+
+
+	// new in-depth check
+	fullHeuristicScore = function(_state, _goal, _actions)
+	{
+	    var error = 0;
+	    var goalKeys = struct_get_names(_goal);
+    
+	    // First pass: Calculate raw gaps
+	    var numericGaps = {};
+	    var booleanMismatches = 0;
+	    var missingKeys = 0;
+    
+	    for (var i = 0; i < array_length(goalKeys); i++)
+		{
+	        var key = goalKeys[i];
+	        var conditionData = _goal[$ key];
+	        var stateValue = struct_exists(_state, key) ? _state[$ key] : undefined;
+
+	        if (stateValue == undefined)
+			{
+	            missingKeys++;
 	            continue;
 	        }
 
-	        var val_a = _a[$ k];
-	        var val_b = _b[$ k];
-
-	        if (is_numeric(val_a) && is_numeric(val_b))
-	        {
-	            if (abs(val_a - val_b) > 0.01) total_diff++;
-	        }
-	        else if (val_a != val_b)
-	        {
-	            total_diff++;
-	        }
-	    }
-
-	    return total_diff;
-	}
-
-	
-	doesSatisfyGoal = function(current_state, goal_state)
-	{
-		var keys = struct_get_names(goal_state);
-		
-		for(var i=0; i<array_length(keys); i++)
-		{
-			var key = keys[i];
-			
-	        if (!current_state[$ key] || current_state[$ key] != goal_state[$ key])
+	        if (is_struct(conditionData))
 			{
-	            return false;
+	            // Numeric conditions
+	            var operator = conditionData.comparison;
+	            var targetValue = conditionData.value;
+	            var gap = 0;
+            
+	            switch (operator)
+				{
+	                case ">=": gap = max(targetValue - stateValue, 0); break;
+	                case "<=": gap = max(stateValue - targetValue, 0); break;
+	                case ">":  gap = stateValue <= targetValue ? (targetValue - stateValue) + 1 : 0; break;
+	                case "<":  gap = stateValue >= targetValue ? (stateValue - targetValue) + 1 : 0; break;
+	                case "=":  gap = abs(targetValue - stateValue); break;
+	            }
+            
+	            if (gap > 0) {
+	                numericGaps[$ key] = {
+	                    gap: gap,
+	                    operator: operator,
+	                    target: targetValue
+	                };
+	            }
+	        } else {
+	            // Boolean conditions
+	            if (stateValue != conditionData) { booleanMismatches++; }
 	        }
 	    }
-	    return true;
+    
+	    // Second pass: Calculate weighted error considering possible actions
+	    if (missingKeys > 0) { error += 1000 * missingKeys; } // High penalty for missing required keys
+    
+	    // Calculate boolean mismatch penalty based on likely action cost
+	    if (booleanMismatches > 0)
+		{
+	        var minBooleanFixCost = findMinActionCostForBools(_actions, _state, _goal);
+	        error += minBooleanFixCost * booleanMismatches;
+	    }
+    
+	    // Calculate numeric gap penalties considering most efficient actions
+	    var gapKeys = struct_get_names(numericGaps);
+	    for (var i = 0; i < array_length(gapKeys); i++)
+		{
+	        var key = gapKeys[i];
+	        var gapInfo = numericGaps[$ key];
+	        var mostEfficientAction = findMostEfficientAction(_actions, key, gapInfo.operator, _state);
+        
+	        if (mostEfficientAction) 
+			{
+	            // Estimate steps needed using best available action
+	            var steps = ceil(gapInfo.gap / mostEfficientAction.effect);
+	            error += steps * mostEfficientAction.cost;
+	        } else {
+	            // No direct action found, use conservative estimate
+	            error += gapInfo.gap * 15; // Base cost per unit if no action found
+	        }
+	    }
+    
+	    return error;
+	}
+	
+	
+	// Helper function to find most efficient action for a numeric goal
+	findMostEfficientAction = function(actions, targetKey, operator, state)
+	{
+	    var bestAction = undefined;
+	    var bestEfficiency = -infinity;
+    
+	    var actionNames = struct_get_names(actions);
+	    for (var i = 0; i < array_length(actionNames); i++)
+		{
+	        var action = actions[$ actionNames[i]];
+        
+	        // Check if action affects our target key in the right direction
+	        if (action.reactions[$ targetKey] != undefined)
+			{
+	            var effect = action.reactions[$ targetKey];
+	            var isImproving = false;
+            
+	            switch (operator)
+				{
+	                case ">=": case ">": isImproving = effect > 0; break;
+	                case "<=": case "<": isImproving = effect < 0; break;
+	                case "=": isImproving = effect != 0; break;
+	            }
+            
+	            if (isImproving)
+				{
+	                // Calculate efficiency (effect per cost)
+	                var efficiency = abs(effect) / max(1, action.cost);
+	                if (efficiency > bestEfficiency)
+					{
+	                    bestEfficiency = efficiency;
+	                    bestAction = {
+	                        effect: abs(effect),
+	                        cost: action.cost
+	                    };
+	                }
+	            }
+	        }
+	    }
+    
+	    return bestAction;
 	}
 
+	// Helper function to estimate cost to fix boolean conditions
+	findMinActionCostForBools = function(actions, state, goal)
+	{
+	    var minCost = 10; // Default cost if no direct actions found
+    
+	    // Find all boolean mismatches
+	    var goalKeys = struct_get_names(goal);
+	    var boolsToFix = [];
+    
+	    for (var i = 0; i < array_length(goalKeys); i++)
+		{
+	        var key = goalKeys[i];
+	        var conditionData = goal[$ key];
+        
+	        if (!is_struct(conditionData))
+			{
+	            var stateValue = struct_exists(state, key) ? state[$ key] : undefined;
+	            if (stateValue != conditionData)
+				{
+	                array_push(boolsToFix, {key: key, target: conditionData});
+	            }
+	        }
+	    }
+    
+	    // Find cheapest action that fixes any boolean
+	    var actionNames = struct_get_names(actions);
+	    for (var i = 0; i < array_length(actionNames); i++)
+		{
+	        var action = actions[$ actionNames[i]];
+        
+	        // Check if this action fixes any boolean condition
+	        for (var j = 0; j < array_length(boolsToFix); j++)
+			{
+	            var fix = boolsToFix[j];
+	            if (action.reactions[$ fix.key] == fix.target)
+				{
+	                if (action.cost < minCost) { minCost = action.cost; }
+	            }
+	        }
+	    }
+    
+	    return minCost;
+	}
 	
-	heuristicScore = function(_state, _goal)
-{		
-    var error = 0;
-
-    // Penalty constants
-    var BASE_BOOLEAN_PENALTY = 30;
-    var MISSING_KEY_PENALTY = 20;
-    var INVALID_NUMERIC_PENALTY = 100;
-
-    var countBooleanMismatches = 0;
-    var countMissingKeys = 0;
-
-    var goalKeys = struct_get_names(_goal);
-
-    for (var i = 0; i < array_length(goalKeys); i++)
-    {
-        var key = goalKeys[i];
-        var conditionData = _goal[$ key];
-        var stateValue = struct_exists(_state, key) ? _state[$ key] : undefined;
-
-        if (is_struct(conditionData))
-        {
-            var operator = conditionData.comparison;
-            var targetValue = conditionData.value;
-
-            if (stateValue == undefined)
-            {
-                countMissingKeys++;
-                continue;
-            }
-
-            if (is_numeric(stateValue) && is_numeric(targetValue))
-            {
-                var gap = 0;
-
-                switch (operator)
-                {
-                    case ">=": gap = max(targetValue - stateValue, 0); break;
-                    case "<=": gap = max(stateValue - targetValue, 0); break;
-                    case ">":  gap = stateValue <= targetValue ? (targetValue - stateValue) + 1 : 0; break;
-                    case "<":  gap = stateValue >= targetValue ? (stateValue - targetValue) + 1 : 0; break;
-                    case "=":  gap = abs(targetValue - stateValue); break;
-                    default: error += INVALID_NUMERIC_PENALTY; break;
-                }
-
-                if (gap > 0)
-                {
-                    if (gap < 2) error += gap;
-                    else error += gap * 1.75;
-					
-                }
-				
-				//if (gap > 0)
-				//{
-				//    var gapRatio = gap / max(abs(targetValue), 1);
-				//    error += gapRatio;
-				//}
-
-				
-            }
-            else {
-                planLog.logWarning($"heuristicScore: Invalid numeric comparison at key '${key}'. State='${string(stateValue)}', Target='${string(targetValue)}'");
-                error += INVALID_NUMERIC_PENALTY;
-            }
-        }
-        else
-        {
-            var expectedValue = conditionData;
-
-            if (stateValue == undefined)
-            {
-                countMissingKeys++;
-                continue;
-            }
-
-            if (stateValue != expectedValue)
-            {
-                countBooleanMismatches++;
-            }
-        }
-    }
-
-    // Add boolean and missing key penalties *after* counting
-    error += BASE_BOOLEAN_PENALTY * countBooleanMismatches;
-    error += MISSING_KEY_PENALTY * countMissingKeys;
-
-    return error;
-}
-
-
-
+	
+	//// COME BACK TO THIS LATER IN THE MORNING
 	calculateHeuristic = function(state, goal)
 	{
 	    var key = hashState(state);
@@ -971,6 +1077,7 @@ function plannerGOAP() constructor
 	    struct_set(heuristic_cache, key, h);
 	    return h;
 	}
+	
 
 
 	ancestorHasState = function(node, new_state)
@@ -991,31 +1098,65 @@ function plannerGOAP() constructor
 	}
 	
 
-	worsensState = function(new_state, current_state, goal_state)
-	{
-	    var new_h = heuristicScore(new_state, goal_state);
-	    var current_h = heuristicScore(current_state, goal_state);
-	    return new_h > current_h;
-	}
 	
-
-	// inverse of worsens state
-	bettersState = function(currentState, resultState, goalState)
+	canContributeToGoal = function(action, goal_state, all_actions) 
 	{
-	    var currentH = heuristicScore(currentState, goalState);
-	    var resultH  = heuristicScore(resultState, goalState);
-	    return resultH < currentH;
-	}
-	
-	
-	neutralState = function(currentState, resultState, goalState, epsilon = 0.01)
-	{
-	    var currentH = heuristicScore(currentState, goalState);
-	    var resultH  = heuristicScore(resultState, goalState);
-	    return abs(resultH - currentH) < epsilon;
-	}
+	    // 1. Check direct effects first
+	    var effects = action.reactions;
+	    var effect_keys = struct_get_names(effects);
 
+	    for (var i = 0; i < array_length(effect_keys); i++) 
+	    {
+	        var key = effect_keys[i];
+	        if (struct_exists(goal_state, key)) 
+	        {
+	            // This action affects something relevant to the goal
+	            return true;
+	        }
+	    }
 
+	    // 2. Check if this action enables other goal-contributing actions
+	    var preconds = action.conditions;
+	    var precond_keys = struct_get_names(preconds);
+
+	    for (var i = 0; i < array_length(precond_keys); i++) 
+	    {
+	        var key = precond_keys[i];
+	        var required_value = preconds[$ key];
+
+	        // See if any action needs this precondition to contribute to goal
+	        var action_names = struct_get_names(all_actions);
+	        for (var j = 0; j < array_length(action_names); j++) 
+	        {
+	            var other_action = all_actions[$ action_names[j]];
+            
+	            var other_effects = other_action.reactions;
+	            var other_effect_keys = struct_get_names(other_effects);
+
+	            // Replace `.some()` with a manual loop:
+	            var found_match = false;
+	            for (var k = 0; k < array_length(other_effect_keys); k++)
+	            {
+	                if (struct_exists(goal_state, other_effect_keys[k]))
+	                {
+	                    found_match = true;
+	                    break;
+	                }
+	            }
+
+	            if (found_match)
+	            {
+	                // Does it need our current action's effect as precondition?
+	                if (struct_exists(other_action.conditions, key) && other_action.conditions[$ key] == required_value) 
+	                {
+	                    return true;
+	                }
+	            }
+	        }
+	    }
+
+	    return false;
+	}
 
 	
 	
@@ -1062,7 +1203,7 @@ function plannerGOAP() constructor
 		    var action = actions[$ action_name];
 
 			
-		    
+			
 		    //if (!planLog.doProfile("checkKeysMatch", checkKeysMatch, [action.conditions, current.state]))
 			if (!checkKeysMatch(action.conditions, current.state))
 			{
@@ -1071,6 +1212,7 @@ function plannerGOAP() constructor
 		        astarLog.nodes_failed++;
 		        continue; // Discard this action: conditions not met
 		    }
+			
 			
 			var new_state;
 			
@@ -1088,7 +1230,9 @@ function plannerGOAP() constructor
 			}
 
 
+			
 			var _new_hash = hashState(new_state);
+			
 			if struct_exists(visited_states, _new_hash)
 			{
 				// State already seen, prune this node
@@ -1097,81 +1241,66 @@ function plannerGOAP() constructor
 			    astarLog.nodes_failed++;
 			    continue;
 			}
+			
+			
+			
+			// Use cached heuristic everywhere
+	        //var current_h = calculateHeuristic(current.state, goal_state);
+	        //var new_h = calculateHeuristic(new_state, goal_state);
+			
+			//show_debug_message($"OLD:	Current: {current_hh}, New: {new_hh}");
+			
+			
+	        var current_h = fullHeuristicScore(current.state, goal_state, actions);
+	        var new_h = fullHeuristicScore(new_state, goal_state, actions);
+			
+	        //var current_h = planLog.doProfile("Current H", fullHeuristicScore, [current.state, goal_state, actions]);
+	        //var new_h = planLog.doProfile("New H", fullHeuristicScore, [new_state, goal_state, actions]);
+			
+			
+			
+			show_debug_message($"[NEW]:	Current: {current_h}, New: {new_h}");
 		
-			
-			if (neutralState(new_state, current.state, goal_state, 0.01)) 
-			{
-				//show_debug_message("States are just abt the same");
-				pruneStats.neutral_state++;
-		        astarLog.nodes_failed++;
-		        continue; // prune this action early
-		    }
-			
-			
-			
-			//if (!planLog.doProfile("bettersState", bettersState, [current.state, new_state, goal_state]))
-			if (!bettersState(current.state, new_state, goal_state))
-			{
-				//show_debug_message("Doesnt better the state");
-				pruneStats.worsenedState++;
-		        astarLog.nodes_failed++;
-				continue;
-			}
-			
-			
-			//if (planLog.doProfile("worsensState",worsensState, [new_state, current.state, goal_state])) 
-			if (worsensState(new_state, current.state, goal_state)) 
-			{
-				//show_debug_message("Worsens the state");
-				pruneStats.worsenedState++;
-		        astarLog.nodes_failed++;
-		        continue; // prune this action early
-		    }
-			
-			
-		    var heuristic = heuristicScore(new_state, goal_state);
-			
-			
-			////if (heuristic > best_f || heuristic > current.h)
-			if (heuristic > best_f  || heuristic > current.h)
-		    {
-				show_debug_message("Heuristic did not improve — pruning.");
-				pruneStats.heuristicTooHigh++;
-		        astarLog.nodes_failed++;
-		        continue;
-		    }
-			
-			
-			
-			// numericly similar
-			//if (planLog.doProfile("statesNearlyEqual", statesNearlyEqual, [new_state, current.state, 2]))
-			if (statesNearlyEqual(new_state, current.state, 2))
-			{
-				//show_debug_message("Sates are too similar, pruning this node.");
-				pruneStats.nearlySame++;
+	        if (new_h > current_h * 1.1) // 10% tolerance
+			{  // worsensState
+	            pruneStats.worsenedState++;
 				astarLog.nodes_failed++;
-				continue;
-			}
+	            continue;
+	        }
+        
+	        if (!(new_h < current_h))
+			{  // NOT bettersState
+	            pruneStats.worsenedState++;
+				astarLog.nodes_failed++;
+	            continue;
+	        }
+        
+		
+	        if (abs(new_h - current_h) < 0.01)
+			{  // neutralState
+	            pruneStats.neutral_state++;
+				astarLog.nodes_failed++;
+	            continue;
+	        }
 			
-			// adds 0-1 ms so DONT do this UNLESS you abs. have to 
-			//if (planLog.doProfile("ancestorHasState",ancestorHasState, [current, new_state]))
-			//{
-			//	//show_debug_message("Ancestor has state - in loop.");
-			//	pruneStats.ancestorLoop++;
-			//	astarLog.nodes_failed++;
-			//	continue;
-			//}
+        
+	        // Main heuristic check
+	        if (new_h > best_f || new_h > current.h)
+			{
+	            pruneStats.heuristicTooHigh++;
+				astarLog.nodes_failed++;
+	            continue;
+	        }
+			
 			
 			
 			struct_set(visited_states, _new_hash, true);
 			
 			
-		    array_push(scored_actions, { name: action_name, state: new_state, heuristic: heuristic, action: action });
+		    array_push(scored_actions, { name: action_name, state: new_state, heuristic: new_h, action: action });
 		}
 
 		// Sort by heuristic (lower is better)
-		//array_sort(scored_actions, function(a, b) { return (b.heuristic - a.heuristic); });
-		
 		array_sort(scored_actions, function(a, b) { return (a.heuristic - b.heuristic); });
 		
 
@@ -1179,6 +1308,10 @@ function plannerGOAP() constructor
 		for (var i = 0; i < array_length(scored_actions); i++)
 		{
 		    var entry = scored_actions[i];
+		    //var g2 = current.g// + entry.action.cost;
+			// greedy search
+			
+			
 		    var g2 = current.g + entry.action.cost;
 		    var f2 = g2 + entry.heuristic;
 			
@@ -1262,7 +1395,7 @@ function plannerGOAP() constructor
 	        {
 				
 				// Update best_f to this solution's f-value
-				var current_f = current.g + current.h;  // or current.f if you have it
+				var current_f = current.f;
 				if (current_f < best_f)
 				{
 				    best_f = current_f;
@@ -1285,13 +1418,16 @@ function plannerGOAP() constructor
 
 	            return _str_names; // Return array of action names
 	        }
+			
+			
 
 	        // If goal not reached, expand the current node
-	        expandNode(current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f);
+	        //expandNode(current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f);
 			
-			//planLog.doProfile("expandNode", expandNode, [current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f]);
+			planLog.doProfile("expandNode", expandNode, [current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f]);
 			
 	    }
+		
 		
 	    // If the loop finishes (queue is empty and goal not found)
 	    ds_priority_destroy(open_queue); // Destroy the queue here too if loop finishes naturally
@@ -1301,7 +1437,7 @@ function plannerGOAP() constructor
 	    return []; // Return an empty plan
 	}
 
-
+	
 	
 	#endregion
 	
@@ -1339,14 +1475,14 @@ function plannerGOAP() constructor
 	    var open_queue = ds_priority_create();
 	    var visited_nodes = {};
 
-	    var start_node = initStartNode(_start_state, _goal_state);
+	    var start_node = initStartNode(_start_state, _goal_state, _actions);
 	    ds_priority_add(open_queue, start_node, start_node.f);
 		
 	    struct_set(visited_nodes, hashState(_start_state), { g: start_node.g, f: start_node.f, node: start_node });
 		
 	    //var _finalPlan = processPlanningLoop(_start_state, open_queue, visited_nodes, _goal_state, _actions);
 		var _finalPlan = planLog.doProfile("processPlanningLoop", processPlanningLoop, [_start_state, open_queue, visited_nodes, _goal_state, _actions]);
-		
+		//var _finalPlan = processPlanningLoopIterative(_start_state, _goal_state, _actions);
 		endAstarLog();
 		
 		return _finalPlan;	//	return a array with names of the actions as strings
