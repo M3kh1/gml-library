@@ -153,7 +153,10 @@ function brainGOAP() constructor
 	    var goal_state = targetGoal.conditions;
 	    var available_actions = actions;
 		
-		var pruned_actions = pruneActionsByGoal(available_actions, goal_state);
+		//show_debug_message($"ALL Actions: {available_actions}");
+		//available_actions = pruneActionsByGoal(available_actions, goal_state);
+		//show_debug_message($"Filtered Actions: {available_actions}");
+		
 	    var new_plan = planner.createPlan(current_state, goal_state, available_actions);
 	    var plan_valid = (array_length(new_plan) > 0);
 
@@ -219,44 +222,6 @@ function brainGOAP() constructor
 			
 		}
 		
-	}
-	
-	
-	pruneActionsByGoal = function(actions, goal_state)
-	{
-	    var pruned_actions = {};
-	    var goal_keys = struct_get_names(goal_state);
-
-	    var action_names = struct_get_names(actions);
-	    for (var i = 0; i < array_length(action_names); i++)
-		{
-	        var action_name = action_names[i];
-	        var action = actions[$ action_name];
-        
-	        // Check if action.effects change any key relevant to the goal
-	        var effects_keys = struct_get_names(action.reactions); // Assuming 'reactions' holds effects
-        
-	        var relevant = false;
-			
-	        for (var k = 0; k < array_length(effects_keys); k++)
-			{
-	            var effect_key = effects_keys[k];
-            
-	            if (array_contains(goal_keys, effect_key))
-				{
-	                // If the effect value is different from goal, it's relevant
-	                if (action.reactions[$ effect_key] != goal_state[$ effect_key])
-					{
-	                    relevant = true;
-	                    break;
-	                }
-	            }
-	        }
-        
-	        if (relevant) pruned_actions[$ action_name] = action;
-	        
-	    }
-	    return pruned_actions;
 	}
 	
 
@@ -494,58 +459,9 @@ function plannerGOAP() constructor
 {
 	planLog = new Logger("GOAP/Planner", true, [LogLevel.info, LogLevel.profile]);
 	
-    heuristic_cache = {};   // Cache for heuristic values
+	
     plan_cache = {};        // Cache for previously generated plans
 	
-	best_solution = undefined;
-	
-    nextID = 1;
-	
-	astarLog = {
-	    nodes_opened: 0,
-	    nodes_failed: 0,
-		failure_rate: 0,
-	    nodes_processed: 0,
-		time_took: 0,
-	}
-	
-	
-	
-	default_log = variable_clone(astarLog);
-	
-	resetLog = function()
-	{
-		astarLog = variable_clone(default_log);
-		
-		//show_debug_message("Restarting A* Log");
-	}
-	
-	printLog = function()
-	{
-		show_debug_message("--------------------------");
-		show_debug_message($"Log: {astarLog}");
-		show_debug_message("----- A* Log of DATA -----");
-		
-		var _vals = struct_get_names(astarLog);
-		
-		for(var i=0; i<array_length(_vals); i++)
-		{
-			var _name = _vals[i];
-			var _logVal = struct_get(astarLog, _name);
-			
-			if string(_name) == "time_took" _logVal = string_format(_logVal, 0, 5);
-			
-			show_debug_message($"{_name}: {_logVal}");
-		}
-		show_debug_message("--------------------------");
-	}
-	
-	endAstarLog = function()
-	{
-		astarLog.failure_rate = astarLog.nodes_failed / (astarLog.nodes_failed + astarLog.nodes_processed);
-		
-		printLog();
-	}
 	
 	
 	#region	--- Helper Functions ---
@@ -570,7 +486,55 @@ function plannerGOAP() constructor
 	    return str;
 	}
 	
+	
+	pruneActionsByGoal = function(actions, goal_state)
+	{
+	    var pruned_actions = {};
+	    var goal_keys = struct_get_names(goal_state);
 
+	    var action_names = struct_get_names(actions);
+	    for (var i = 0; i < array_length(action_names); i++)
+		{
+	        var action_name = action_names[i];
+	        var action = actions[$ action_name];
+        
+	        // Check if action.effects change any key relevant to the goal
+	        var effects_keys = struct_get_names(action.reactions);
+        
+	        var relevant = false;
+			
+	        for (var k = 0; k < array_length(effects_keys); k++)
+			{
+	            var effect_key = effects_keys[k];
+            
+	            if (array_contains(goal_keys, effect_key))
+				{
+					// Directly Relavant
+	                // If the effect value is different from goal, it's relevant
+	                //if (action.reactions[$ effect_key] != goal_state[$ effect_key])
+					//{
+	                //    relevant = true;
+	                //    break;
+	                //}
+					
+					// Just helps in general
+					relevant = true;
+	                break;
+				}
+	            
+	        }
+        
+	        if (relevant)
+			{
+				pruned_actions[$ action_name] = action;
+			} else {
+				show_debug_message($"Action Not Relevant: {action_name}");
+			}
+	        
+	    }
+	    return pruned_actions;
+	}
+	
 	
 	checkKeysMatch = function(_conditions_or_reactions, _state_to_check) // Renamed parameters for clarity
 	{
@@ -587,44 +551,6 @@ function plannerGOAP() constructor
 	    return true; // If all keys matched, the whole set matches
 	}
 
-	reconstructPath = function(goal_node) // goal_node is the final astarNode
-	{
-	    var actions = []; // This array will store ACTION NAMES (strings)
-	    // Start from the goal node and walk back through parents
-	    var current = goal_node; // 'current' should be an astarNode
-
-	    if (current == undefined)
-		{
-	        //show_debug_message("reconstructPath: Started with undefined goal_node!"); // Should not happen if a path was found
-	        return [];
-	    }
-
-	    // While current node is valid and has a parent (i.e., not the start node)
-	    while (current != undefined && current.parent != undefined) // <-- Error is reported on this line
-		{
-	        array_push(actions, current.action); // Collect the action NAME (string)
-	        current = current.parent; // Move up to the parent node
-	    }
-
-	    // The actions are collected in reverse order, so reverse them for correct sequence
-	    actions = array_reverse(actions); // Array of strings
-
-	    return actions; // Returns array of action names
-	}
-
-
-	// Generate a unique cache key for a given start state and goal conditions.
-	// This key is used to store and retrieve plans from the plan_cache.
-	generateCacheKey = function(_startState, _goalConditions)
-	{
-		// Combine the hash of the start state and the hash of the goal conditions.
-		// Ensure goal conditions are also hashed consistently (e.g., sort keys).
-		var start_state_hash = hashState(_startState);
-		var goal_conditions_hash = hashState(_goalConditions); // Assuming goal conditions are a struct
-
-		return start_state_hash + "|" + goal_conditions_hash; // Use a separator that won't appear in hashes
-	}
-	
 	
 	keyMatches = function(_state_to_check, _target_struct, _key_to_check)
 	{
@@ -683,6 +609,45 @@ function plannerGOAP() constructor
 	    }
 	}
 	
+
+	reconstructPath = function(goal_node) // goal_node is the final astarNode
+	{
+	    var actions = []; // This array will store ACTION NAMES (strings)
+	    // Start from the goal node and walk back through parents
+	    var current = goal_node; // 'current' should be an astarNode
+
+	    if (current == undefined)
+		{
+	        //show_debug_message("reconstructPath: Started with undefined goal_node!"); // Should not happen if a path was found
+	        return [];
+	    }
+
+	    // While current node is valid and has a parent (i.e., not the start node)
+	    while (current != undefined && current.parent != undefined) // <-- Error is reported on this line
+		{
+	        array_push(actions, current.action); // Collect the action NAME (string)
+	        current = current.parent; // Move up to the parent node
+	    }
+
+	    // The actions are collected in reverse order, so reverse them for correct sequence
+	    actions = array_reverse(actions); // Array of strings
+
+	    return actions; // Returns array of action names
+	}
+
+
+	// Generate a unique cache key for a given start state and goal conditions.
+	// This key is used to store and retrieve plans from the plan_cache.
+	generateCacheKey = function(_startState, _goalConditions)
+	{
+		// Combine the hash of the start state and the hash of the goal conditions.
+		// Ensure goal conditions are also hashed consistently (e.g., sort keys).
+		var start_state_hash = hashState(_startState);
+		var goal_conditions_hash = hashState(_goalConditions); // Assuming goal conditions are a struct
+
+		return start_state_hash + "|" + goal_conditions_hash; // Use a separator that won't appear in hashes
+	}
+	
 	
 	// --- Simulate applying an action's reactions to a state ---
     simulateReactions = function(_state, _reactions)
@@ -733,597 +698,273 @@ function plannerGOAP() constructor
     }
 	
 	
-	initStartNode = function(start_state, goal_state)
-	{
-	    var h = heuristicScore(start_state, goal_state);
-	    return new astarNode(0, start_state, "", 0, h, undefined);
-	}
 	
-	
-	statesNearlyEqual = function(_a, _b, _tolerance)
+	structToArray = function(_struct)
 	{
-	    var keys_a = struct_get_names(_a);
-	    var keys_b = struct_get_names(_b);
-
-	    // Early out: Different key counts mean not equal
-	    if (array_length(keys_a) != array_length(keys_b)) return false;
-
-	    // Check keys in _a vs _b
-	    for (var i = 0; i < array_length(keys_a); i++)
-	    {
-	        var key = keys_a[i];
-
-	        if (!struct_exists(_b, key)) return false;
-
-	        var val_a = _a[$ key];
-	        var val_b = _b[$ key];
-
-	        if (is_numeric(val_a) && is_numeric(val_b))
-	        {
-	            if (abs(val_a - val_b) > _tolerance) return false;
-	        }
-	        else if (val_a != val_b)
-	        {
-	            return false;
-	        }
-	    }
-
-	    // Symmetric: Check keys in _b vs _a (optional if keys match, but safe)
-	    for (var i = 0; i < array_length(keys_b); i++)
-	    {
-	        var key = keys_b[i];
-
-	        if (!struct_exists(_a, key)) return false;
-
-	        var val_a = _a[$ key];
-	        var val_b = _b[$ key];
-
-	        if (is_numeric(val_a) && is_numeric(val_b))
-	        {
-	            if (abs(val_a - val_b) > _tolerance) return false;
-	        }
-	        else if (val_a != val_b)
-	        {
-	            return false;
-	        }
-	    }
-
-	    return true;
-	}
-
-	
-
-	/// @desc Returns the number of differing key-value pairs between two state structs.
-	statesDiff = function(_a, _b)
-	{
-	    var keys_a = struct_get_names(_a);
-	    var keys_b = struct_get_names(_b);
-
-	    // Collect unique keys from both structs
-	    var unique_keys = [];
-
-	    for (var i = 0; i < array_length(keys_a); i++)
-	    {
-	        var k = keys_a[i];
-	        if (!array_contains(unique_keys, k)) array_push(unique_keys, k);
-	    }
-
-	    for (var i = 0; i < array_length(keys_b); i++)
-	    {
-	        var k = keys_b[i];
-	        if (!array_contains(unique_keys, k)) array_push(unique_keys, k);
-	    }
-
-	    // Compare values
-	    var total_diff = 0;
-
-	    for (var i = 0; i < array_length(unique_keys); i++)
-	    {
-	        var k = unique_keys[i];
-
-	        var has_a = struct_exists(_a, k);
-	        var has_b = struct_exists(_b, k);
-
-	        if (!has_a || !has_b)
-	        {
-	            total_diff++;
-	            continue;
-	        }
-
-	        var val_a = _a[$ k];
-	        var val_b = _b[$ k];
-
-	        if (is_numeric(val_a) && is_numeric(val_b))
-	        {
-	            if (abs(val_a - val_b) > 0.01) total_diff++;
-	        }
-	        else if (val_a != val_b)
-	        {
-	            total_diff++;
-	        }
-	    }
-
-	    return total_diff;
-	}
-
-	
-	doesSatisfyGoal = function(current_state, goal_state)
-	{
-		var keys = struct_get_names(goal_state);
+		var _finalArray = [];
 		
-		for(var i=0; i<array_length(keys); i++)
+		var _keys = struct_get_names(_struct);
+		
+		for(var i=0; i<array_length(_keys); i++)
 		{
-			var key = keys[i];
-			
-	        if (!current_state[$ key] || current_state[$ key] != goal_state[$ key])
-			{
-	            return false;
-	        }
-	    }
-	    return true;
-	}
-
-	
-	heuristicScore = function(_state, _goal)
-{		
-    var error = 0;
-
-    // Penalty constants
-    var BASE_BOOLEAN_PENALTY = 30;
-    var MISSING_KEY_PENALTY = 20;
-    var INVALID_NUMERIC_PENALTY = 100;
-
-    var countBooleanMismatches = 0;
-    var countMissingKeys = 0;
-
-    var goalKeys = struct_get_names(_goal);
-
-    for (var i = 0; i < array_length(goalKeys); i++)
-    {
-        var key = goalKeys[i];
-        var conditionData = _goal[$ key];
-        var stateValue = struct_exists(_state, key) ? _state[$ key] : undefined;
-
-        if (is_struct(conditionData))
-        {
-            var operator = conditionData.comparison;
-            var targetValue = conditionData.value;
-
-            if (stateValue == undefined)
-            {
-                countMissingKeys++;
-                continue;
-            }
-
-            if (is_numeric(stateValue) && is_numeric(targetValue))
-            {
-                var gap = 0;
-
-                switch (operator)
-                {
-                    case ">=": gap = max(targetValue - stateValue, 0); break;
-                    case "<=": gap = max(stateValue - targetValue, 0); break;
-                    case ">":  gap = stateValue <= targetValue ? (targetValue - stateValue) + 1 : 0; break;
-                    case "<":  gap = stateValue >= targetValue ? (stateValue - targetValue) + 1 : 0; break;
-                    case "=":  gap = abs(targetValue - stateValue); break;
-                    default: error += INVALID_NUMERIC_PENALTY; break;
-                }
-
-                if (gap > 0)
-                {
-                    if (gap < 2) error += gap;
-                    else error += gap * 1.75;
-					
-                }
-				
-				//if (gap > 0)
-				//{
-				//    var gapRatio = gap / max(abs(targetValue), 1);
-				//    error += gapRatio;
-				//}
-
-				
-            }
-            else {
-                planLog.logWarning($"heuristicScore: Invalid numeric comparison at key '${key}'. State='${string(stateValue)}', Target='${string(targetValue)}'");
-                error += INVALID_NUMERIC_PENALTY;
-            }
-        }
-        else
-        {
-            var expectedValue = conditionData;
-
-            if (stateValue == undefined)
-            {
-                countMissingKeys++;
-                continue;
-            }
-
-            if (stateValue != expectedValue)
-            {
-                countBooleanMismatches++;
-            }
-        }
-    }
-
-    // Add boolean and missing key penalties *after* counting
-    error += BASE_BOOLEAN_PENALTY * countBooleanMismatches;
-    error += MISSING_KEY_PENALTY * countMissingKeys;
-
-    return error;
-}
-
-
-
-	calculateHeuristic = function(state, goal)
-	{
-	    var key = hashState(state);
-	    if (struct_exists(heuristic_cache, key))
-		{
-	        
-			var _data = struct_get(heuristic_cache, key);
-			
-			planLog.logDebug($"Heuristic cache found: {heuristic_cache}");
-	        return _data;
-	    }
-		
-	    var h = heuristicScore(state, goal);
-	    struct_set(heuristic_cache, key, h);
-	    return h;
-	}
-
-
-	ancestorHasState = function(node, new_state)
-	{
-	    var new_key = hashState(new_state);
-
-	    while (node != undefined && node != noone)
-	    {
-	        var node_key = hashState(node.state);
-	        if (node_key == new_key)
-	        {
-	            return true;
-	        }
-	        node = node.parent;
-	    }
-
-	    return false;
-	}
-	
-
-	worsensState = function(new_state, current_state, goal_state)
-	{
-	    var new_h = heuristicScore(new_state, goal_state);
-	    var current_h = heuristicScore(current_state, goal_state);
-	    return new_h > current_h;
-	}
-	
-
-	// inverse of worsens state
-	bettersState = function(currentState, resultState, goalState)
-	{
-	    var currentH = heuristicScore(currentState, goalState);
-	    var resultH  = heuristicScore(resultState, goalState);
-	    return resultH < currentH;
-	}
-	
-	
-	neutralState = function(currentState, resultState, goalState, epsilon = 0.01)
-	{
-	    var currentH = heuristicScore(currentState, goalState);
-	    var resultH  = heuristicScore(resultState, goalState);
-	    return abs(resultH - currentH) < epsilon;
-	}
-
-
-
-	
-	
-	pruneStats = {
-	  neutral_state: 0,
-	  visited_states: 0,
-	  heuristicTooHigh: 0,
-	  worsenedState: 0,
-	  ancestorLoop: 0,
-	  nearlySame: 0,
-	  conditionsNotMet: 0
-	}
-	
-	resetPruneStats = function()
-	{
-		pruneStats = 
-		{
-			neutral_state: 0,
-			visited_states: 0,
-			heuristicTooHigh: 0,
-			worsenedState: 0,
-			ancestorLoop: 0,
-			nearlySame: 0,
-			conditionsNotMet: 0
-		}
-	}
-	
-	
-	
-	
-	expandNode = function(current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f)
-	{
-		//show_debug_message("Trying to expand node");
-		
-		//var keys = array_shuffle(struct_get_names(actions));
-	    var keys = struct_get_names(actions);
-		
-	    var scored_actions = [];
-		
-
-		for (var i = 0; i < array_length(keys); i++)
-		{
-		    var action_name = keys[i];
-		    var action = actions[$ action_name];
-
-			
-		    
-		    //if (!planLog.doProfile("checkKeysMatch", checkKeysMatch, [action.conditions, current.state]))
-			if (!checkKeysMatch(action.conditions, current.state))
-			{
-				//show_debug_message("Keys dont match");
-				pruneStats.conditionsNotMet++;
-		        astarLog.nodes_failed++;
-		        continue; // Discard this action: conditions not met
-		    }
-			
-			var new_state;
-			
-			var reaction_key = hashState(current.state) + "|" + action_name;
-			if (struct_exists(reaction_cache, reaction_key))
-			{
-			    new_state = reaction_cache[$ reaction_key];
-				show_debug_message("Got reaction cache.");
-				//show_debug_message($"React Key: {reaction_key}");
-			} else {
-			    new_state = simulateReactions(current.state, action.reactions);
-			    struct_set(reaction_cache, reaction_key, new_state);
-				
-				//show_debug_message($"React Key: {reaction_key}");
-			}
-
-
-			var _new_hash = hashState(new_state);
-			if struct_exists(visited_states, _new_hash)
-			{
-				// State already seen, prune this node
-				//show_debug_message("Visited this state alrdy.");
-			    pruneStats.visited_states++;
-			    astarLog.nodes_failed++;
-			    continue;
-			}
-		
-			
-			if (neutralState(new_state, current.state, goal_state, 0.01)) 
-			{
-				//show_debug_message("States are just abt the same");
-				pruneStats.neutral_state++;
-		        astarLog.nodes_failed++;
-		        continue; // prune this action early
-		    }
-			
-			
-			
-			//if (!planLog.doProfile("bettersState", bettersState, [current.state, new_state, goal_state]))
-			if (!bettersState(current.state, new_state, goal_state))
-			{
-				//show_debug_message("Doesnt better the state");
-				pruneStats.worsenedState++;
-		        astarLog.nodes_failed++;
-				continue;
-			}
-			
-			
-			//if (planLog.doProfile("worsensState",worsensState, [new_state, current.state, goal_state])) 
-			if (worsensState(new_state, current.state, goal_state)) 
-			{
-				//show_debug_message("Worsens the state");
-				pruneStats.worsenedState++;
-		        astarLog.nodes_failed++;
-		        continue; // prune this action early
-		    }
-			
-			
-		    var heuristic = heuristicScore(new_state, goal_state);
-			
-			
-			////if (heuristic > best_f || heuristic > current.h)
-			if (heuristic > best_f  || heuristic > current.h)
-		    {
-				show_debug_message("Heuristic did not improve — pruning.");
-				pruneStats.heuristicTooHigh++;
-		        astarLog.nodes_failed++;
-		        continue;
-		    }
-			
-			
-			
-			// numericly similar
-			//if (planLog.doProfile("statesNearlyEqual", statesNearlyEqual, [new_state, current.state, 2]))
-			if (statesNearlyEqual(new_state, current.state, 2))
-			{
-				//show_debug_message("Sates are too similar, pruning this node.");
-				pruneStats.nearlySame++;
-				astarLog.nodes_failed++;
-				continue;
-			}
-			
-			// adds 0-1 ms so DONT do this UNLESS you abs. have to 
-			//if (planLog.doProfile("ancestorHasState",ancestorHasState, [current, new_state]))
-			//{
-			//	//show_debug_message("Ancestor has state - in loop.");
-			//	pruneStats.ancestorLoop++;
-			//	astarLog.nodes_failed++;
-			//	continue;
-			//}
-			
-			
-			struct_set(visited_states, _new_hash, true);
-			
-			
-		    array_push(scored_actions, { name: action_name, state: new_state, heuristic: heuristic, action: action });
-		}
-
-		// Sort by heuristic (lower is better)
-		//array_sort(scored_actions, function(a, b) { return (b.heuristic - a.heuristic); });
-		
-		array_sort(scored_actions, function(a, b) { return (a.heuristic - b.heuristic); });
-		
-
-		// Now insert into queue
-		for (var i = 0; i < array_length(scored_actions); i++)
-		{
-		    var entry = scored_actions[i];
-		    var g2 = current.g + entry.action.cost;
-		    var f2 = g2 + entry.heuristic;
-			
-			
-
-	        // PRUNE: skip nodes worse than best known solution
-			//show_debug_message($"f2:{f2} >= best_f:{best_f}");
-	        if (f2 >= best_f)
-			{
-				show_debug_message($"Pruned Node cus f2:{f2} >= best_f:{best_f}");
-				astarLog.nodes_failed++;
-	            continue;
-			}
-			
-		    var new_key = hashState(entry.state);
-		    if (struct_exists(visited_nodes, new_key))
-			{
-		        var existing = visited_nodes[$ new_key];
-				//show_debug_message("Alrdy Visited the node b4.");
-				
-		        if (existing.g < g2)
-				{
-					//show_debug_message("Pruning node on insertion: existing cheaper path found.");
-					astarLog.nodes_failed++;
-					continue; // Discard if a cheaper or equal-cost path already visited
-				}
-				//if (existing.f <= f2) continue;
-		    }
-
-		    var new_node = new astarNode(nextID++, entry.state, entry.name, g2, entry.heuristic, current);
-		    ds_priority_add(open_queue, new_node, new_node.f);
-			
-			// Right before adding node to queue:
-			//show_debug_message("Adding new node with g=" + string(g2) + ", f=" + string(f2));
-
-		    struct_set(visited_nodes, new_key, { g: g2, f: f2, node: new_node });
-		    astarLog.nodes_opened++;
+			array_push(_finalArray, _struct[$ _keys[i]]);
 		}
 		
-		show_debug_message("Prune Stats: "+string(pruneStats));
-		resetPruneStats();
-
+		return _finalArray;
+		
 	}
 	
 	
 	
-	processPlanningLoop = function(start_state, open_queue, visited_nodes, goal_state, actions)
+	getPlanActionNames = function(_plan)
 	{
-		var reaction_cache = {};
-	    var scored_actions = [];
-		var visited_states = {};
-		
-		// best node heuristic + cost
-		var best_f = infinity;
-	
-
-		
-		var MAX_PLANNING_STEPS = 10000; //If it hits 10,000 nodes then the search space is too large.
-	    while (!ds_priority_empty(open_queue) && astarLog.nodes_processed < MAX_PLANNING_STEPS)
-	    {
-	        var current = ds_priority_delete_min(open_queue); // Get the best node
+		var _temp = [];
+		for(var i=0; i<array_length(_plan); i++)
+		{
+			var _act = _plan[i];
+			var _name = _act.name;
 			
-			var current_key = hashState(current.state);
-	        if (struct_exists(visited_nodes, current_key))
-	        {
-	            var best = visited_nodes[$ current_key];
-	            if (current.g > best.g)
-	            {
-	                // This node is outdated (worse path), skip it
-					show_debug_message("This node is outdated (worse path), skip it");
-	                astarLog.nodes_failed++;
-	                continue;  // Skip to next iteration (pop another node)
+			array_push(_temp, _name);
+		}
+		
+		return _temp;
+	}
+	
+	getPlanCost = function(_plan)
+	{
+		var _total = 0;
+		for(var i=0; i<array_length(_plan); i++)
+		{
+			var _act = _plan[i];
+			var _cost = _act.cost;
+			//var _name = _act.name;
+			
+			_total += _cost;
+		}
+		
+		return _total;
+	}
+	
+	
+	
+	/// @desc Returns a struct of relevant actions needed to achieve the goal.
+	/// @param actions - struct of all possible GOAP actions (by name or ID)
+	/// @param goal - struct representing the desired goal state
+	/// @returns struct of relevant actions
+	backwardPlanning = function(actions, goal)
+	{
+	    var neededKeys = struct_get_names(goal);
+	    var visitedKeys = [];
+	    var relevantActions = {};
+
+	    var foundNew = true;
+	    while (foundNew) {
+	        foundNew = false;
+
+	        var allKeys = struct_get_names(actions);
+	        for (var i = 0; i < array_length(allKeys); i++) {
+	            var key = allKeys[i];
+	            var act = actions[$ key];
+
+	            var reactionKeys = is_struct(act.reactions) ? struct_get_names(act.reactions) : [];
+
+	            // Manually check if any reactionKey matches a neededKey
+	            var matches = false;
+	            for (var r = 0; r < array_length(reactionKeys); r++) {
+	                if (array_contains(neededKeys, reactionKeys[r])) {
+	                    matches = true;
+	                    break;
+	                }
+	            }
+
+	            if (matches) {
+	                if (!struct_exists(relevantActions, key)) {
+	                    relevantActions[$ key] = act;
+	                    foundNew = true;
+	                }
+
+	                var condKeys = is_struct(act.conditions) ? struct_get_names(act.conditions) : [];
+	                for (var j = 0; j < array_length(condKeys); j++) {
+	                    var condKey = condKeys[j];
+	                    if (!array_contains(neededKeys, condKey) && !array_contains(visitedKeys, condKey)) {
+	                        array_push(neededKeys, condKey);
+	                        array_push(visitedKeys, condKey);
+	                        foundNew = true;
+	                    }
+	                }
 	            }
 	        }
-			
-	        astarLog.nodes_processed++;
+	    }
 
-	        var goal_check_result = checkKeysMatch(goal_state, current.state);
-	        // If goal is reached
-	        if (goal_check_result)
-	        {
+	    return relevantActions;
+	}
+	
+	
+	goalProgressCount = function(_state, _goalState)
+	{
+	    var count = 0;
+	    var keys = struct_get_names(_goalState);
+	    for (var i = 0; i < array_length(keys); i++)
+	    {
+	        var key = keys[i];
+	        if (struct_exists(_state, key) && _state[$ key] == _goalState[$ key])
+	            count++;
+	    }
+	    return count;
+	}
+
+
+	#endregion
+
+	
+	findPlan = function(_startState, _goalState, _actions, _numOfPlans=3)
+	{
+	    // Filtering out Actions
+	    show_debug_message($"Action AMT: {array_length(struct_get_names(_actions))}");
+    
+	    _actions = backwardPlanning(_actions, _goalState);
+	    var _allActions = structToArray(_actions);
+	    show_debug_message($"Action AMT: {array_length(struct_get_names(_actions))}");
+    
+	    var _visitedStates = {};       // stateHash -> true
+	    var _actionsTriedMap = {};     // stateHash -> struct of actions tried
+		var _deadEndStates = {};	   // stateHash -> true 
+
+	    var _plans = [];
+	    var _planAmt = _numOfPlans;
+	    var _foundEnough = false;
+	    var _nonDeterministic = false;
+	    var _queue = [];
+	    var _depth = 0;
+
+	    var _startHash = hashState(_startState);
+	    array_push(_queue, {state: _startState, plan: []});
+	    struct_set(_visitedStates, _startHash, true);
+	    struct_set(_actionsTriedMap, _startHash, {}); // empty actions tried map for start state
+
+	    while (array_length(_queue) > 0)
+	    {
+	        var _node = _queue[0];
+	        array_delete(_queue, 0, 1);
+
+	        var _currentState = _node.state;
+	        var _currentPlan = _node.plan;
+
+	        _depth = array_length(_currentPlan);
+	        show_debug_message("Current depth (plan length): " + string(_depth));
+
+	        //_actions = backwardPlanning(_actions, _goalState);
+	        //_allActions = structToArray(_actions);
+
+	        var _hash = hashState(_currentState);
+
+
+			// Skip if state is a known dead end
+	        if (struct_exists(_deadEndStates, _hash))
+	        {
+	            // Debug: skipping known dead end state
+				show_debug_message($"Skipping Dead End State: {_hash}");
+	            continue;
+	        }
+			
+
+	        // Get the map of actions tried from this state
+	        var _actionsTried = struct_get(_actionsTriedMap, _hash);
+			var _foundNextStates = false; // track if any action leads somewhere
+
+	        if (_nonDeterministic) _allActions = array_shuffle(_allActions);
+
+	        for (var a = 0; a < array_length(_allActions); a++)
+	        {
+	            var _act = _allActions[a];
+
+	            // Skip if this action was already tried from this state
+	            if (struct_exists(_actionsTried, _act.name))
+	            {
+	                show_debug_message($"Action: {_act.name} already tried");
+	                continue;
+	            }
+
+	            // Mark this action as tried from this state
+	            struct_set(_actionsTried, _act.name, true);
+	            struct_set(_actionsTriedMap, _hash, _actionsTried);
+
+	            if (!checkKeysMatch(_act.conditions, _currentState))
+	            {
+	                continue;
+	            }
+
+	            var _simState = simulateReactions(_currentState, _act.reactions);
+	            var _nextHash = hashState(_simState);
 				
-				// Update best_f to this solution's f-value
-				var current_f = current.g + current.h;  // or current.f if you have it
-				if (current_f < best_f)
+				
+				
+	            // Skip if this state has been visited already
+	            if (struct_exists(_visitedStates, _nextHash))
 				{
-				    best_f = current_f;
-				    //show_debug_message($"Setting best_f to {best_f}");
+					//show_debug_message($"State Alrdy Visited.");
+					continue;
 				}
 
+				var currentProgress = goalProgressCount(_currentState, _goalState);
+				var nextProgress = goalProgressCount(_simState, _goalState);
+				if (nextProgress < currentProgress) 
+				{
+					show_debug_message("Action Worsens the goal progess.");
+				    continue; // prune action that reduces goal progress
+				}
 				
-	            //show_debug_message($"--- GOAL REACHED! State ID {current.ID} ---"); // Add success log
-	            astarLog.time_took = current_time - astarLog.time_took;
-	            ds_priority_destroy(open_queue);
-				
-				var _str_names = reconstructPath(current); // Pass the goal node to reconstructPath
-				
-				//var _str_names = planLog.doProfile("reconstructPath", reconstructPath, [current]);
-				
-				// --- Cache the found plan ---
-				var cache_key = generateCacheKey(start_state, goal_state); // Use the GOAL state for caching
-				struct_set(plan_cache, cache_key, _str_names);
-				planLog.logInfo($"Plan cached for state/goal: {cache_key}");
 
-	            return _str_names; // Return array of action names
-	        }
+				
+				
+	            var _newPlan = variable_clone(_currentPlan);
+	            array_push(_newPlan, _act);
 
-	        // If goal not reached, expand the current node
-	        expandNode(current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f);
-			
-			//planLog.doProfile("expandNode", expandNode, [current, goal_state, actions, open_queue, visited_nodes, visited_states, reaction_cache, best_f]);
-			
-	    }
-		
-	    // If the loop finishes (queue is empty and goal not found)
-	    ds_priority_destroy(open_queue); // Destroy the queue here too if loop finishes naturally
-		planLog.logWarning($"No valid plan could be generated within limits (Processed: {astarLog.nodes_processed}, Explored: {astarLog.nodes_opened}).");
+	            if (checkKeysMatch(_goalState, _simState))
+	            {
+	                var _pcost = getPlanCost(_newPlan);
+	                var _pnames = getPlanActionNames(_newPlan);
 
-	    //show_debug_message("Process Planning Loop finished without finding a plan.");
-	    return []; // Return an empty plan
+	                array_push(_plans, {plan: _pnames, planCost: _pcost});
+
+	                if (array_length(_plans) >= _planAmt)
+	                {
+	                    _foundEnough = true;
+	                    break;
+	                }
+	            }
+
+	            // Mark this new state visited & add empty action tried map
+	            struct_set(_visitedStates, _nextHash, true);
+	            struct_set(_actionsTriedMap, _nextHash, {});
+
+	            array_push(_queue, {state: _simState, plan: _newPlan});
+				_foundNextStates = true;  // we found at least one next state to explore
+	        }
+
+			// If no next states found, mark this state as dead end
+	        if (!_foundNextStates)
+	        {
+	            struct_set(_deadEndStates, _hash, true);
+	            // Optional: debug message
+	            show_debug_message("Dead-end detected at state: " + string(_hash));
+	        }
+
+	        if (_foundEnough) break;
+	    }
+
+	    return _plans;
 	}
 
-
-	
-	#endregion
 	
 	
-	function astarNode(_id, _state, _action, _g, _h, _parent) constructor
-	{
-	    ID      = _id;                    // unique numeric
-	    state   = variable_clone(_state);    // 
-	    action  = _action;                // string name
-	    g       = _g;                     // accumulated cost
-	    h       = _h;                     // heuristic
-	    f       = _g + _h;                // total score
-	    parent  = _parent;                // link to another astarNode
-	}
 	
 	
 	createPlan = function(_start_state, _goal_state, _actions)
 	{
 		
 		show_debug_message("Create Plan started...");
-	    resetLog();
-	    astarLog.time_took = current_time;
+	    
 
 		// --- Check Plan Cache ---
 		var cache_key = generateCacheKey(_start_state, _goal_state);
@@ -1331,29 +972,22 @@ function plannerGOAP() constructor
 		{
 			var cached_plan = struct_get(plan_cache, cache_key);
 			planLog.logInfo($"Plan found in cache for state/goal: {cache_key}. Using cached plan.");
-			astarLog.time_took = current_time - astarLog.time_took; // Calculate time for cache lookup
-			//printLog(); // Print log even for cached plans
 			return cached_plan; // Return the cached plan immediately
 		}
 
-	    var open_queue = ds_priority_create();
-	    var visited_nodes = {};
-
-	    var start_node = initStartNode(_start_state, _goal_state);
-	    ds_priority_add(open_queue, start_node, start_node.f);
 		
-	    struct_set(visited_nodes, hashState(_start_state), { g: start_node.g, f: start_node.f, node: start_node });
+	
 		
-	    //var _finalPlan = processPlanningLoop(_start_state, open_queue, visited_nodes, _goal_state, _actions);
-		var _finalPlan = planLog.doProfile("processPlanningLoop", processPlanningLoop, [_start_state, open_queue, visited_nodes, _goal_state, _actions]);
+		var _finalPlan = findPlan(_start_state, _goal_state, _actions, 1);
 		
-		endAstarLog();
+		//show_debug_message($"Plans: {_finalPlan}");
+		
+		
 		
 		return _finalPlan;	//	return a array with names of the actions as strings
 	}
 
 
-	
 }
 
 
