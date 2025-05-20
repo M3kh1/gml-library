@@ -172,7 +172,7 @@ function brainGOAP() constructor
 	    var _endTime = (current_time - _startTime);
 		
 		
-		Log.logDebug($"New plan generated in ({string_format(_endTime, 0, 2)} ms) successfully.");
+		Log.logDebug($"New plan generated successfully in ({_endTime} ms) so abt. ({round(_endTime/16.67)} frames).");
 		
 		printPlan();
 		
@@ -804,161 +804,258 @@ function plannerGOAP() constructor
 	{
 	    var count = 0;
 	    var keys = struct_get_names(_goalState);
-	    for (var i = 0; i < array_length(keys); i++)
+	    var totalKeys = array_length(keys);
+    
+	    for (var i = 0; i < totalKeys; i++)
 	    {
 	        var key = keys[i];
 	        if (struct_exists(_state, key) && _state[$ key] == _goalState[$ key])
+	        {
 	            count++;
+	        } 
+	        else 
+	        {
+	            //count--;
+	        }
 	    }
-	    return count;
+		//show_debug_message($"Count: {count}");
+	    // Add base to shift score into positive range
+	    return count// + totalKeys; // score will be between 0 and totalKeys * 2
 	}
 
 
-	#endregion
 
 	
-	findPlan = function(_startState, _goalState, _actions, _numOfPlans=3)
+	/// @param array     The array to slice
+	/// @param start     The start index (0-based)
+	/// @param length    The number of elements to include
+	/// @returns         A new array with the sliced elements
+
+	array_slice = function(_array, _start, _length)
 	{
-	    // Filtering out Actions
-	    show_debug_message($"Action AMT: {array_length(struct_get_names(_actions))}");
+	    var _result = [];
+	    var _end = _start + _length;
+	    var _count = array_length(_array);
     
-	    _actions = backwardPlanning(_actions, _goalState);
-	    var _allActions = structToArray(_actions);
-	    show_debug_message($"Action AMT: {array_length(struct_get_names(_actions))}");
-    
-	    var _visitedStates = {};       // stateHash -> true
-	    var _actionsTriedMap = {};     // stateHash -> struct of actions tried
-		var _deadEndStates = {};	   // stateHash -> true 
+	    // Clamp the end to array bounds
+	    if (_start < 0) _start = 0;
+	    if (_end > _count) _end = _count;
 
-	    var _plans = [];
-	    var _planAmt = _numOfPlans;
-	    var _foundEnough = false;
-	    var _nonDeterministic = false;
-	    var _queue = [];
-	    var _depth = 0;
+	    for (var i = _start; i < _end; i++)
+		{
+	        array_push(_result, _array[i]);
+	    }
 
-	    var _startHash = hashState(_startState);
-	    array_push(_queue, {state: _startState, plan: []});
-	    struct_set(_visitedStates, _startHash, true);
-	    struct_set(_actionsTriedMap, _startHash, {}); // empty actions tried map for start state
+	    return _result;
+	}
 
-	    while (array_length(_queue) > 0)
+
+	isActionDominated = function(a1, a2)
+	{
+	    // Check if a2 has all of a1's effects and they are >= in value
+	    var a1Reactions = a1.reactions;
+	    var a2Reactions = a2.reactions;
+	    var keysA1 = struct_get_names(a1Reactions);
+
+	    for (var i = 0; i < array_length(keysA1); i++)
 	    {
-	        var _node = _queue[0];
-	        array_delete(_queue, 0, 1);
+	        var key = keysA1[i];
 
-	        var _currentState = _node.state;
-	        var _currentPlan = _node.plan;
+	        if (!struct_exists(a2Reactions, key)) return false;
 
-	        _depth = array_length(_currentPlan);
-	        show_debug_message("Current depth (plan length): " + string(_depth));
+	        var valA1 = a1Reactions[$ key];
+	        var valA2 = a2Reactions[$ key];
 
-	        //_actions = backwardPlanning(_actions, _goalState);
-	        //_allActions = structToArray(_actions);
-
-	        var _hash = hashState(_currentState);
-
-
-			// Skip if state is a known dead end
-	        if (struct_exists(_deadEndStates, _hash))
+	        if (is_real(valA1) && is_real(valA2))
 	        {
-	            // Debug: skipping known dead end state
-				show_debug_message($"Skipping Dead End State: {_hash}");
-	            continue;
+	            if (valA2 < valA1) return false; // a2's value must be >= a1
 	        }
-			
-
-	        // Get the map of actions tried from this state
-	        var _actionsTried = struct_get(_actionsTriedMap, _hash);
-			var _foundNextStates = false; // track if any action leads somewhere
-
-	        if (_nonDeterministic) _allActions = array_shuffle(_allActions);
-
-	        for (var a = 0; a < array_length(_allActions); a++)
+	        else if (valA1 != valA2)
 	        {
-	            var _act = _allActions[a];
+	            return false; // must match exactly if not numeric
+	        }
+	    }
 
-	            // Skip if this action was already tried from this state
-	            if (struct_exists(_actionsTried, _act.name))
+	    // Check for side effects — a2 must not have extra reactions a1 doesn't
+	    var keysA2 = struct_get_names(a2Reactions);
+	    for (var j = 0; j < array_length(keysA2); j++)
+	    {
+	        if (!struct_exists(a1Reactions, keysA2[j]))
+	        {
+	            return false; // a2 has an effect a1 doesn't — side effect
+	        }
+	    }
+
+	    // Check cost
+	    var cost1 = a1.cost ?? 1;
+	    var cost2 = a2.cost ?? 1;
+	    if (cost2 > cost1) return false;
+
+	    return true; // a1 is dominated by a2
+	}
+
+
+
+
+	filterDominatedActions = function(_allActions, _state)
+	{
+	    var filtered = [];
+
+	    for (var a = 0; a < array_length(_allActions); a++)
+	    {
+	        var actA = _allActions[a];
+	        if (!checkKeysMatch(actA.conditions, _state)) continue;
+
+	        var dominated = false;
+
+	        for (var b = 0; b < array_length(_allActions); b++)
+	        {
+	            if (a == b) continue;
+				
+	            var actB = _allActions[b];
+	            if (!checkKeysMatch(actB.conditions, _state)) continue;
+
+	            if (isActionDominated(actA, actB))
 	            {
-	                show_debug_message($"Action: {_act.name} already tried");
-	                continue;
+	                dominated = true;
+	                break;
 	            }
+	        }
 
-	            // Mark this action as tried from this state
-	            struct_set(_actionsTried, _act.name, true);
-	            struct_set(_actionsTriedMap, _hash, _actionsTried);
+	        if (!dominated)
+	        {
+	            array_push(filtered, actA);
+	        }
+	    }
 
-	            if (!checkKeysMatch(_act.conditions, _currentState))
+	    return filtered;
+	}
+
+	
+	/// calculateDynamicBeamWidth(currentState, goalState, minBeam, maxBeam)
+	/// Returns an adaptive beam width based on goal proximity
+
+	calculateDynamicBeamWidth = function(_currentState, _goalState, _min=2, _max=8)
+	{
+	    var progress = goalProgressCount(_currentState, _goalState);
+	    var total = array_length(struct_get_names(_goalState));
+    
+	    if (total <= 0) return _min; // fallback
+
+	    var closeness = progress / total; // 0.0 = far, 1.0 = near
+	    return clamp(round(lerp(_max, _min, closeness)), _min, _max);
+	}
+
+	
+
+	#endregion
+
+
+	findPlan = function(_startState, _goalState, _actions, _minBeam=2, _maxBeam=10, _numOfPlans=3)
+	{
+	    show_debug_message($"Before Filter - Actions: {array_length(struct_get_names(_actions))}");
+
+	    var _allActions = structToArray(_actions);
+
+	    show_debug_message($"After Filter - Actions: {array_length(getPlanActionNames(_allActions))}");
+
+	    var _visited = {};
+	    var _plans = [];
+
+	    // Initialize first level with start state
+	    var _level = [{
+	        state: _startState,
+	        plan: [],
+	        score: goalProgressCount(_startState, _goalState)
+	    }];
+
+	    while (array_length(_level) > 0 && array_length(_plans) < _numOfPlans)
+	    {
+	        var _nextLevel = [];
+
+	        for (var i = 0; i < array_length(_level); i++)
+	        {
+	            var _node = _level[i];
+	            var _state = _node.state;
+	            var _plan = _node.plan;
+
+	            // Calculate beam width dynamically for this node
+	            var dynamicBeam = calculateDynamicBeamWidth(_state, _goalState, _minBeam, _maxBeam);
+
+	            // 1. Gather applicable actions with scores
+	            var candidateActions = [];
+	            for (var a = 0; a < array_length(_allActions); a++)
 	            {
-	                continue;
-	            }
-
-	            var _simState = simulateReactions(_currentState, _act.reactions);
-	            var _nextHash = hashState(_simState);
-				
-				
-				
-	            // Skip if this state has been visited already
-	            if (struct_exists(_visitedStates, _nextHash))
-				{
-					//show_debug_message($"State Alrdy Visited.");
-					continue;
-				}
-
-				var currentProgress = goalProgressCount(_currentState, _goalState);
-				var nextProgress = goalProgressCount(_simState, _goalState);
-				if (nextProgress < currentProgress) 
-				{
-					show_debug_message("Action Worsens the goal progess.");
-				    continue; // prune action that reduces goal progress
-				}
-				
-
-				
-				
-	            var _newPlan = variable_clone(_currentPlan);
-	            array_push(_newPlan, _act);
-
-	            if (checkKeysMatch(_goalState, _simState))
-	            {
-	                var _pcost = getPlanCost(_newPlan);
-	                var _pnames = getPlanActionNames(_newPlan);
-
-	                array_push(_plans, {plan: _pnames, planCost: _pcost});
-
-	                if (array_length(_plans) >= _planAmt)
+	                var act = _allActions[a];
+	                if (checkKeysMatch(act.conditions, _state))
 	                {
-	                    _foundEnough = true;
-	                    break;
+	                    var newState = simulateReactions(_state, act.reactions);
+	                    var _score = goalProgressCount(newState, _goalState);
+	                    array_push(candidateActions, { action: act, score: _score });
 	                }
 	            }
 
-	            // Mark this new state visited & add empty action tried map
-	            struct_set(_visitedStates, _nextHash, true);
-	            struct_set(_actionsTriedMap, _nextHash, {});
+	            // 2. Sort descending by score (progress to goal)
+	            array_sort(candidateActions, function(a, b)
+				{
+	                //return a.score - b.score;
+	                return b.score - a.score;	// better
+	            });
 
-	            array_push(_queue, {state: _simState, plan: _newPlan});
-				_foundNextStates = true;  // we found at least one next state to explore
+	            // 3. Prune candidate actions to dynamic beam width
+	            if (array_length(candidateActions) > dynamicBeam)
+	                candidateActions = array_slice(candidateActions, 0, dynamicBeam);
+
+	            // 4. Expand each candidate action
+	            for (var a = 0; a < array_length(candidateActions); a++)
+	            {
+	                var act = candidateActions[a].action;
+
+	                var newState = simulateReactions(_state, act.reactions);
+	                var newHash = hashState(newState);
+	                if (struct_exists(_visited, newHash)) continue;
+
+	                var newPlan = variable_clone(_plan);
+	                array_push(newPlan, act);
+
+	                if (checkKeysMatch(_goalState, newState))
+	                {
+	                    array_push(_plans, {
+	                        plan: getPlanActionNames(newPlan),
+	                        planCost: getPlanCost(newPlan)
+	                    });
+	                    if (array_length(_plans) >= _numOfPlans) break;
+	                }
+
+	                array_push(_nextLevel, {
+	                    state: newState,
+	                    plan: newPlan,
+	                    score: goalProgressCount(newState, _goalState)
+	                });
+
+	                struct_set(_visited, newHash, true);
+	            }
+
+	            if (array_length(_plans) >= _numOfPlans) break;
 	        }
 
-			// If no next states found, mark this state as dead end
-	        if (!_foundNextStates)
-	        {
-	            struct_set(_deadEndStates, _hash, true);
-	            // Optional: debug message
-	            show_debug_message("Dead-end detected at state: " + string(_hash));
-	        }
+	        // Sort next level by score descending
+	        array_sort(_nextLevel, function(a, b) {
+	            return b.score - a.score;
+	        });
 
-	        if (_foundEnough) break;
+	        // Prune next level to maxCandidates = dynamicBeam * 2 for speed
+	        var maxCandidates = dynamicBeam * 2;
+	        if (array_length(_nextLevel) > maxCandidates)
+	            _nextLevel = array_slice(_nextLevel, 0, maxCandidates);
+
+	        // Prepare for next iteration, slice to dynamicBeam
+	        _level = array_slice(_nextLevel, 0, dynamicBeam);
 	    }
 
 	    return _plans;
 	}
 
-	
-	
-	
 	
 	createPlan = function(_start_state, _goal_state, _actions)
 	{
@@ -976,12 +1073,7 @@ function plannerGOAP() constructor
 		}
 
 		
-	
-		
-		var _finalPlan = findPlan(_start_state, _goal_state, _actions, 1);
-		
-		//show_debug_message($"Plans: {_finalPlan}");
-		
+		var _finalPlan = findPlan(_start_state, _goal_state, _actions, 2, 7, 1);
 		
 		
 		return _finalPlan;	//	return a array with names of the actions as strings
