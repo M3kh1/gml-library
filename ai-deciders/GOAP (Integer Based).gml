@@ -883,33 +883,32 @@ function plannerGOAP(_allActions) constructor
 	    return enablingActions;
 	}
 
-	
-	getUnmetConditionsRecursive = function(_conditions, _state, _visitedKeys=[])
-	{
-	    //if (argument_count < 3) _visitedKeys = [];  // initialize if not passed
 
-	    var unmet = [];
+
+	getUnmetConditionsRecursive = function(_conditions, _state, _visitedKeys=[], _depth=0, _resultMap=undefined)
+	{
+	    if (_visitedKeys == undefined) _visitedKeys = [];
+	    if (_resultMap == undefined) _resultMap = {};
+
 	    var keys = struct_get_names(_conditions);
 
 	    for (var i = 0; i < array_length(keys); i++)
 	    {
 	        var key = keys[i];
 
-	        // Skip keys already visited (to avoid cycles)
-	        if (array_contains(_visitedKeys, key))
-	            continue;
+	        if (array_contains(_visitedKeys, key)) continue;
 
-	        // Mark key as visited
 	        array_push(_visitedKeys, key);
 
-	        // Check if the key condition is unmet in the current state
 	        if (!keyMatches(_state, _conditions, key))
 	        {
-	            // Add this unmet key
-	            array_push(unmet, key);
+	            // Only keep the maximum depth
+	            if (!struct_exists(_resultMap, key) || _depth > _resultMap[$ key])
+	            {
+	                _resultMap[$ key] = _depth;
+	            }
 
-	            // Find all actions that produce this key
-	            var producingActs = conditionGraph[$ key];  // safer struct access
+	            var producingActs = conditionGraph[$ key];
 	            if (producingActs != undefined)
 	            {
 	                for (var j = 0; j < array_length(producingActs); j++)
@@ -918,25 +917,51 @@ function plannerGOAP(_allActions) constructor
 	                    var action = allActions[$ actName];
 	                    if (action != undefined && action.conditions != undefined)
 	                    {
-	                        // Recursively collect unmet keys from the action's conditions
-	                        var subUnmet = getUnmetConditionsRecursive(action.conditions, _state, _visitedKeys);
-
-	                        // Add unique unmet keys from recursion
-	                        for (var k = 0; k < array_length(subUnmet); k++)
-	                        {
-	                            if (!array_contains(unmet, subUnmet[k]))
-	                                array_push(unmet, subUnmet[k]);
-	                        }
+	                        getUnmetConditionsRecursive(action.conditions, _state, _visitedKeys, _depth + 1, _resultMap);
 	                    }
 	                }
 	            }
 	        }
 	    }
-	
-	
-	
-	    return unmet;
+
+	    if (_depth == 0) // root call: return sorted array
+	    {
+	        var out = [];
+	        var mapKeys = struct_get_names(_resultMap);
+	        for (var i = 0; i < array_length(mapKeys); i++)
+	        {
+	            var key = mapKeys[i];
+	            array_push(out, { key: key, depth: _resultMap[$ key] });
+	        }
+
+	        // Sort by descending depth (deeper = higher priority
+	        array_sort(out, function(a, b)
+			{
+	            return b.depth - a.depth;
+	        });
+			
+	        return out;
+	    }
+		
+
+	    return [];
 	}
+
+
+	stripDownUnmetConditionsRecursive = function(_unmetkeys)
+	{
+		var _temp = [];
+		for(var i=0; i<array_length(_unmetkeys); i++)
+		{
+			var _key = _unmetkeys[i];
+			var _unmetKey = _key.key;
+			array_push(_temp, _unmetKey);
+			
+			//show_debug_message($"Unmet Key: {_key}");
+		}
+		return _temp;
+	}
+	
 	
 	
 	scoreActionsByState = function(_actionNames, _stateKeys, _goal)
@@ -1538,6 +1563,8 @@ function plannerGOAP(_allActions) constructor
 			// dynamic filtering
 			var _unmetGoalKeys = getUnmetConditionsRecursive(_goalState, _state);
 			
+			_unmetGoalKeys = stripDownUnmetConditionsRecursive(_unmetGoalKeys);
+			
 			show_debug_message($"Recursive Unmet Goal Keys: {_unmetGoalKeys}");
 			
 			var _actionsCollectedInRecursion = {};
@@ -1558,7 +1585,6 @@ function plannerGOAP(_allActions) constructor
 			// Score and sort actions 
 			var scored = scoreActionsByState(_finalRelevantActions, struct_get_names(_state), _goalState);
 			_finalRelevantActions = getActionNamesFromScored(scored);
-			
 			
 			
 			var _foundBetter = false;
@@ -1670,7 +1696,7 @@ function plannerGOAP(_allActions) constructor
 				// Apply heuristic consistency correction
 				var _correctedH = max(_hAfter, _node.hCost - _act.cost);
 				
-				var _correctedH = _hAfter;
+				//var _correctedH = _hAfter;
 				
 				var _hBefore = goalHeuristic(_state, _goalState);
 				
