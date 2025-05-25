@@ -684,6 +684,71 @@ function plannerGOAP(_allActions) constructor
     }
 	
 	
+	simulatePositiveReactions = function(_state, _reactions)
+	{
+	    var new_state = variable_clone(_state); // Start with a copy of the current state
+	    var reaction_keys = struct_get_names(_reactions);
+
+	    for (var i = 0; i < array_length(reaction_keys); i++)
+	    {
+	        var key = reaction_keys[i];
+	        var reaction_value = _reactions[$ key];
+
+	        // --- Logic to define and apply "positive" reactions only ---
+
+	        // 1. Adding a new key (always considered positive if it's being added)
+	        if (!struct_exists(new_state, key))
+	        {
+	            new_state[$ key] = reaction_value;
+	            planLog.logDebug($"Simulating Positive Reaction: Added new key '{key}' with value '{string(reaction_value)}'.");
+	            continue;
+	        }
+
+	        // 2. Boolean values: Only apply if setting to 'true'
+	        if (is_bool(reaction_value))
+	        {
+	            if (reaction_value == true) // Only apply if the reaction is to set to true
+	            {
+	                new_state[$ key] = reaction_value;
+	                planLog.logDebug($"Simulating Positive Reaction: Key '{key}' set to boolean 'true'.");
+	            }
+	            else
+	            {
+	                planLog.logDebug($"Simulating Positive Reaction: Ignored setting key '{key}' to boolean 'false' (not positive).");
+	            }
+	        }
+	        // 3. Numeric values: Only apply if increasing (positive change)
+	        else if (is_numeric(reaction_value) && is_numeric(new_state[$ key]))
+	        {
+	            if (reaction_value > 0) // Only apply if the reaction is a positive numeric change
+	            {
+	                new_state[$ key] += reaction_value;
+	                planLog.logDebug($"Simulating Positive Reaction: Key '{key}' numerical increase by {string(reaction_value)}. New value: {string(new_state[$ key])}.");
+	            }
+	            else
+	            {
+	                planLog.logDebug($"Simulating Positive Reaction: Ignored numerical change for key '{key}' as it's not positive ({string(reaction_value)}).");
+	            }
+	        }
+	        // 4. Other types (e.g., strings): Treat as positive if a new value is being set (or if you have specific positive string changes)
+	        // For simplicity, we'll treat any direct assignment for non-boolean/non-numeric as "positive" if it's changing the value.
+	        // You might refine this further if "positive" has a different meaning for strings.
+	        else
+	        {
+	             // If the value is changing to something new, consider it positive.
+	             // You might need more specific rules here depending on your game's logic.
+	            if (new_state[$ key] != reaction_value)
+				{
+	                new_state[$ key] = reaction_value;
+	                planLog.logDebug($"Simulating Positive Reaction: Key '{key}' set to new value '{string(reaction_value)}'.");
+	            } else {
+	                planLog.logDebug($"Simulating Positive Reaction: Key '{key}' already has value '{string(reaction_value)}', no change applied.");
+	            }
+	        }
+	    }
+	    return new_state;
+	}
+	
 	getPlanActionNames = function(_plan)
 	{
 		var _temp = [];
@@ -996,7 +1061,7 @@ function plannerGOAP(_allActions) constructor
 			}
 		}
 		
-		show_debug_message($"Trimmed to {array_length(trimmed)} <- from: {array_length(relevantActions)}, Relevant actions: {trimmed}");
+		//show_debug_message($"Trimmed to {array_length(trimmed)} <- from: {array_length(relevantActions)}, Relevant actions: {trimmed}");
 		return trimmed;
 	}
 
@@ -1017,7 +1082,7 @@ function plannerGOAP(_allActions) constructor
 	}
 
 
-	
+	// Eats up Time during planning(ms)
 	ancestorHasState = function(node, new_state)
 	{
 	    var new_key = hashState(new_state);
@@ -1457,6 +1522,98 @@ function plannerGOAP(_allActions) constructor
 	}
 
 
+	
+
+	filterActionsByPositiveEffects = function(_actions, _currentState, _unmetGoalKeys, _goalState)
+	{
+	    var _filteredActions = [];
+	    var _positiveCountThisCall = 0;
+
+	    for (var i = 0; i < array_length(_actions); i++)
+	    {
+	        var _actName = _actions[i];
+	        var _act = allActions[$ _actName];
+	        if (_act == undefined) continue;
+
+	        var _hasPositiveEffect = false;
+
+	        for (var j = 0; j < array_length(_unmetGoalKeys); j++)
+	        {
+	            var _unmetKey = _unmetGoalKeys[j];
+
+	            if (!struct_exists(_act.reactions, _unmetKey)) continue;
+
+	            var _reactionValue = _act.reactions[$ _unmetKey];
+	            var _currentValue = _currentState[$ _unmetKey];
+	            var _goalDefinition = undefined;
+	            if (struct_exists(_goalState, _unmetKey)) {
+	                _goalDefinition = _goalState[$ _unmetKey];
+	            } else {
+	                continue; 
+	            }
+
+	            if (is_struct(_goalDefinition) && struct_exists(_goalDefinition, "comparison") && is_numeric(_reactionValue))
+				{
+				    var _operator = _goalDefinition.comparison;
+				    var _targetValue = _goalDefinition.value;
+
+				    switch (_operator)
+				    {
+				        case ">=": 
+				        case ">":
+				            if (_reactionValue > 0) _hasPositiveEffect = true;
+				            break;
+
+				        case "<=": 
+				        case "<":
+				            if (_reactionValue < 0) _hasPositiveEffect = true;
+				            break;
+
+				        case "=":
+				            // Don't use currentValue — just check reaction *moves* toward value
+				            if (_reactionValue != 0) _hasPositiveEffect = true;
+				            break;
+				    }
+				}
+
+	            else if (!is_struct(_goalDefinition))
+	            {
+	                // For booleans/enums, action's effect matches the goal value — good
+	                if (_reactionValue == _goalDefinition) _hasPositiveEffect = true;
+	            }
+				
+				// If no clearly positive effect was found, include fallback if it affects the key
+				//if (!_hasPositiveEffect)
+				//{
+				//    // Still allow if the action changes the unmet key at all
+				//    if (struct_exists(_act.reactions, _unmetKey))
+				//    {
+				//        _hasPositiveEffect = true;
+				//    }
+				//}
+
+				
+	            if (_hasPositiveEffect) break;
+	        }
+
+	        if (_hasPositiveEffect)
+	        {
+	            array_push(_filteredActions, _actName);
+	            _positiveCountThisCall++;
+	        }
+	    }
+
+	    return {
+	        filteredActions: _filteredActions,
+	        positiveCount: _positiveCountThisCall
+	    };
+	}
+
+
+	
+	
+
+
 	#endregion
 	
 	
@@ -1471,18 +1628,13 @@ function plannerGOAP(_allActions) constructor
 	}
 	
 	
+	
+	
+	
 
 	findPlan = function(_startState, _goalState)
 	{
 		
-		/*
-			Example:
-			
-			Sim State: { HasWeapon : 1, Ammo : 10, Scrap : -15, WeaponNeedsRepair : 0, HasSupplyCrate : 0 }
-			Goal State: { HasWeapon : 1, Ammo : { comparison : ">=", value : 10 }, WeaponNeedsRepair : 0 }
-			Expanding (13): g=35, h=0, f=35
-		
-		*/
 		
 		#region	<Init Vars>
 		
@@ -1492,33 +1644,37 @@ function plannerGOAP(_allActions) constructor
 		var _relevantActions = getPlanActionNames(structToArray(allActions)); // im Dynamically gonna Prune actions per node ltr
 		
 		
-		show_debug_message($"Init Actions: {_relevantActions}");
+		//show_debug_message($"Init Actions: {_relevantActions}");
 		
 		// cached data
 		var _visitedNodes = {};				// stateHash -> best node
 		var _stateActionsMap = {};			// track actions tried on each state (state hash -> struct of action names)
-		var _deadEnds = {};
+		
+		var _relevantActionsCache = {};  // cacheKey -> filtered actions array
 		
 		
 		var _nonDeterministic = false;		// can lower speed of the planner
 		
-		var _open = [];
+		var _open = ds_priority_create();
 		
 		var _bestFSoFar = infinity; // Large initial value
 		var _bestGoalNode = noone;
 		
 		var _expanded = 0;
 		var _pruned = 0;
+		var _staleNodes = 0;
+		var _accumulatedNode = 0;
 		
 		var _finalPlan = [];
 		
 		
 		var _startHash = hashState(_startState);
+		var _goalStateHash = hashState(_goalState);
 		var _startNode = new astarNode(_startState, undefined, undefined, 0, goalHeuristic(_startState, _goalState));
-
+		
 		
 		struct_set(_visitedNodes, _startHash, _startNode);
-		array_push(_open, _startNode);
+		ds_priority_add(_open, _startNode, _startNode.fCost);
 
 		
 		
@@ -1527,21 +1683,19 @@ function plannerGOAP(_allActions) constructor
 		show_debug_message($"Goal State: {_goalState}");
 		show_debug_message($"Start State: {_startState}");
 		
-		// add a ds priority queue
-		
 		// A* Pathfinding from _startState -> _goalState
-		while (array_length(_open) > 0)
+		while (!ds_priority_empty(_open))
 		{
 			
-			var _node = _open[0];
+			var _node = ds_priority_delete_min(_open);
+			
 			//var _printEvery = (_expanded mod 1 == 0);
-			var _printEvery = (true);
+			var _printEvery = (false);
 			
 			// Early termination: if best goal found and next node's fCost is >= best goal fCost, break
 		    if (_bestGoalNode != noone && _node.fCost >= _bestFSoFar) break; // no better solution 
 			
 			
-			array_delete(_open, 0, 1);
 
 
 			var _currentState = _node.state;
@@ -1549,27 +1703,20 @@ function plannerGOAP(_allActions) constructor
 			var _stateHash = hashState(_currentState);
 			
 			
-			// Before expanding:
-			if (struct_exists(_deadEnds, _stateHash))
+			var _bestOldNode = _visitedNodes[$ _stateHash];
+			if (_bestOldNode != _node)
 			{
-				show_debug_message("Skip dead end");
-			    _pruned++;
-			    continue;
+				//show_debug_message("Stale Node");
+				_staleNodes++;
+				continue; // Stale node
 			}
+				    
+			_expanded++;
+			
+			
+			
 
-			// no-no
-			//if !is_undefined(_currentAction)
-			//{
-			//	if (!checkKeysMatch(_currentAction.conditions, _currentState))
-			//	{
-			//		if (_printEvery) show_debug_message($"Before Expanding ~ Action ({_actName}) conditions not met.");
-					
-			//		//show_debug_message($"Action Failed on current state: {_currentAction.name}");
-					
-			//		_pruned++;
-			//		continue;
-			//	}
-			//}
+			
 				
 
 			if (_nonDeterministic) _relevantActions = array_shuffle(_relevantActions);
@@ -1578,26 +1725,38 @@ function plannerGOAP(_allActions) constructor
 
 			// dynamic filtering
 			var _unmetGoalKeys = getUnmetConditionsIterative(_goalState, _currentState);
+			var _collectedActs;
 			
-			show_debug_message($"Unmet Goal Keys: {_unmetGoalKeys}");
+			// Same unmet goal patterns should produce same relevant actions
+			var _goalPatternKey = string(_unmetGoalKeys); // Convert array to string
 			
-			var _collectedActs = collectRelevantActions(_unmetGoalKeys);
-			_collectedActs = trimActionsToUnmet(_collectedActs, _unmetGoalKeys);
-
-
+			if (struct_exists(_relevantActionsCache, _goalPatternKey))
+			{
+				//show_debug_message("Cache Hit for Relevant Actions.");
+			    _collectedActs = _relevantActionsCache[$ _goalPatternKey];
+			} else {
+			    _collectedActs = collectRelevantActions(_unmetGoalKeys);
+			    _collectedActs = trimActionsToUnmet(_collectedActs, _unmetGoalKeys);
+			    struct_set(_relevantActionsCache, _goalPatternKey, _collectedActs);
+			}
+			
 			var _filterResult = filterActionsByNegativeEffects(_collectedActs, _currentState, _unmetGoalKeys, _goalState);
 			_collectedActs = _filterResult.filteredActions; // Get the filtered array
-			//_pruned += _filterResult.prunedCount;         // Add to the main _pruned counter
 			
-			show_debug_message($"Filtered Actions ({array_length(_collectedActs)}): {_collectedActs}");
+			
+			
+			//show_debug_message($"Filtered Actions ({array_length(_collectedActs)}): {_collectedActs}");
 
-			// Score and sort actions here:
+			// Score and sort actions here maybe:
 			
 			
-			var _foundBetter = false;
+			
+			// before expansion
+			
+			_accumulatedNode += (_node.fCost - _node.gCost - _node.hCost);
 			
 			
-			show_debug_message("[ Expanding Relevant Actions ==========================]");
+			//show_debug_message("[ Expanding Relevant Actions ==========================]");
 			
 			// Expand all relavant actions
 			for (var i = 0; i < array_length(_collectedActs); i++)
@@ -1614,9 +1773,6 @@ function plannerGOAP(_allActions) constructor
 				if (!checkKeysMatch(_act.conditions, _currentState))
 				{
 					if (_printEvery) show_debug_message($"Action ({_actName}) conditions not met.");
-					
-					//show_debug_message($"Action conditons dont match: {_actName}");
-					
 					_pruned++;
 					continue;
 				}
@@ -1625,11 +1781,13 @@ function plannerGOAP(_allActions) constructor
 				
 			
 				var _simState = simulateReactions(_currentState, _act.reactions);
+				//_simState = planLog.doProfile("simulateReactions", simulateReactions, [_currentState, _act.reactions])
 				var _simHash = hashState(_simState);
 				
 				
 				#region			--- Pruning After Simulating State ---
-			
+				
+				
 				
 				// Check if action already tried on this state
 				if (!struct_exists(_stateActionsMap, _simHash))
@@ -1649,12 +1807,12 @@ function plannerGOAP(_allActions) constructor
 				}
 				
 				
-				if ancestorHasState(_node, _simState)
-				{
-					if (_printEvery) show_debug_message("After SIM, Ancestor with same action path.");
-					_pruned++;
-					continue;
-				}
+				//if ancestorHasState(_node, _simState)
+				//{
+				//	if (_printEvery) show_debug_message("After SIM, Ancestor with same action path.");
+				//	_pruned++;
+				//	continue;
+				//}
 				
 				
 				
@@ -1668,15 +1826,6 @@ function plannerGOAP(_allActions) constructor
 				var _newNode = new astarNode(_simState,_act,_node, (_node.gCost + _act.cost), _correctedH);
 				
 				
-				
-				// Early termination: if best goal found and next node's fCost is >= best goal fCost, break
-				if (_newNode.fCost >= _bestFSoFar)
-				{
-					if (_printEvery) show_debug_message($"Pruning: new f={_newNode.fCost} >= best f={_bestFSoFar}");
-				    _pruned++;
-				    continue;
-				}
-				
 				// Optional: Diagnostic output
 				if (_newNode.hCost != _hAfter)
 				{
@@ -1689,7 +1838,7 @@ function plannerGOAP(_allActions) constructor
 					
 					*/
 					
-				    show_debug_message("Heuristic corrected: " + string(_hAfter) + " -> " + string(_newNode.hCost));
+				    //show_debug_message("Heuristic corrected: " + string(_hAfter) + " -> " + string(_newNode.hCost));
 					
 				}
 				
@@ -1709,52 +1858,39 @@ function plannerGOAP(_allActions) constructor
 				#region			<Create a new node>
 				
 				
-				// Check if we've visited the node based on the _simHash
+				var enqueueNode = false;
+
 				if (struct_exists(_visitedNodes, _simHash))
 				{
-					//show_debug_message("next hash exists");
-					
-					var _existingOldNode = _visitedNodes[$ _simHash];
-					
+				    _staleNodes++;
+				    var _existingOldNode = _visitedNodes[$ _simHash];
 
-					// Skip only if the existing node is strictly better
-					if (_existingOldNode.fCost < _newNode.fCost)
+				    if (_existingOldNode.fCost < _newNode.fCost)
 					{
-						if (_printEvery) show_debug_message("Better or equal node already visited, skipping");
-						_pruned++;
-						continue;
-					}
-					
-					
-					if (_newNode.gCost >= _existingOldNode.gCost)
-					{
-						if (_printEvery) show_debug_message("likely in a loop");
 				        _pruned++;
 				        continue;
 				    }
 
-					
-					
-					// If you're here, the new node is better.
-					// But the open list still contains the old worse node,
-					// Remove old version from open list
-					show_debug_message("Find & remove old node");
-				    for (var j = 0; j < array_length(_open); j++)
+				    if (_newNode.gCost >= _existingOldNode.gCost)
 					{
-				        var _existing = _open[j];
-						
-						var _extHash = hashState(_existing.state);
-						
-						//show_debug_message($"Ext: ({_extHash}) ~ Next: ({_sHash})");
-						
-				        if (_extHash == _simHash)
-						{
-				            array_delete(_open, j, 1);
-							if (_printEvery) show_debug_message("Old node DELETED.");
-				            break;
-				        }
+				        _pruned++;
+				        continue;
 				    }
+
+				    enqueueNode = true; // better path
 				}
+				else
+				{
+				    enqueueNode = true; // new state
+				}
+
+				if (enqueueNode)
+				{
+				    struct_set(_visitedNodes, _simHash, _newNode);
+				    var priority = _newNode.fCost + (_newNode.hCost * 0.0001);
+				    ds_priority_add(_open, _newNode, priority);
+				}
+
 				
 				
 				struct_set(_actionSet, _actName, true);
@@ -1779,38 +1915,16 @@ function plannerGOAP(_allActions) constructor
 				
 				
 				
-				// Add node to expand
-				struct_set(_visitedNodes, _simHash, _newNode);
-				array_push(_open, _newNode);
-				_expanded++;
-				_foundBetter = true;
 				
 				//show_debug_message($"Action Made it: {_actName}");
-				show_debug_message($"[{current_time-_startMS} ms] Expanding ({_expanded}): g={_newNode.gCost}, h={_newNode.hCost}, f={_newNode.fCost}");
+				//show_debug_message($"[{current_time-_startMS} ms] Expanding ({_expanded}): g={_newNode.gCost}, h={_newNode.hCost}, f={_newNode.fCost}");
 				//show_debug_message("--------------------------------------------------");
 				
 			}
 			
-			show_debug_message("[ Finished Expanding Relevant Actions =================]");
+			//show_debug_message("[ Finished Expanding Relevant Actions =================]");
 			
-			if (!_foundBetter && !state_meets_goal(_currentState, _goalState))
-			{
-			    struct_set(_deadEnds, _stateHash, true);
-			}
 
-			
-			// Tie-break on fCost, then prefer lower hCost (closer to goal)
-			array_sort(_open, function(a, b)
-			{
-				if (a.fCost == b.fCost)
-				{
-					//show_debug_message("Tie-Break F Cost.");
-					return a.hCost < b.hCost;
-				}
-				//show_debug_message("NO TIE");
-
-				return a.fCost < b.fCost;
-			});
 			
 		}
 		
@@ -1835,16 +1949,30 @@ function plannerGOAP(_allActions) constructor
 					If Goal Efficiency improves, more of your expansions are actually contributing to the final plan.
 			*/
 			
-			
-			var _totalNodes = (_pruned + _expanded);
-			var _prunedRatio = (_pruned / _totalNodes);					 //cutting out #% of nodes early.
+			var _truePruned = _pruned - _staleNodes;
+			//_pruned = _truePruned;
+			var _totalNodes = (_truePruned + _expanded);
+			var _prunedRatio = (_truePruned / _totalNodes);					 //cutting out #% of nodes early.
 			var _expansionEfficiency = (_expanded / _totalNodes);		 //confirms about #% of nodes got fully expanded.
 			var _branchingFactor = (_expanded / _pLen);					 //for every step in the plan, you explored about # nodes.
 			var _goalEfficiency = 1 - ((_expanded - _pLen) / _expanded); //only #% of expanded nodes ended up on the final plan path.
-
+			var _reExpansionRate = (_staleNodes / _expanded);
+			var _avgHeuristicRate = (_accumulatedNode / _expanded);
 			
-			show_debug_message($"Node Data: [Total: {_totalNodes}, Pruned: {_pruned}, Expanded: {_expanded}, Prune Ratio: {_prunedRatio}]");
+			show_debug_message($"Node Data: [Total: {_totalNodes}, Pruned: {_truePruned}, Expanded: {_expanded}, Stale: {_staleNodes}, Prune Ratio: {_prunedRatio}]");
 			show_debug_message($"Node Data: [Efficiency: {_expansionEfficiency}, Branching: {_branchingFactor}, Goal Efficiency: {_goalEfficiency}]");
+			show_debug_message($"Node Data: [Re-Expansion Rate: {_reExpansionRate}, Average Heuristic Rate: {_avgHeuristicRate}]");
+			
+			
+			
+			/*
+					Node Data: [Total: 1120, Pruned: 320, Expanded: 800, Stale: 4069, Prune Ratio: 0.29]
+					Node Data: [Efficiency: 0.71, Branching: 57.14, Goal Efficiency: 0.02]
+					Node Data: [Re-Expansion Rate: 5.09, Average Heuristic Rate: 0.00]
+					[GOAP/Brain][debug] ~ New plan: (14) generated successfully in (3586 ms) so abt. (215 frames).
+			
+			
+			*/
 		}
 		
 		return _finalPlan;
@@ -1885,15 +2013,15 @@ function plannerGOAP(_allActions) constructor
 		//}
 		
 		
-		show_debug_message($"Reaction Graph");
-		var _rnames = struct_get_names(reactionGraph);
-		for(var i=0; i<array_length(_rnames); i++)
-		{
-			var _reactName = _rnames[i];
-			var _reactDependencies = reactionGraph[$ _reactName];
+		//show_debug_message($"Reaction Graph");
+		//var _rnames = struct_get_names(reactionGraph);
+		//for(var i=0; i<array_length(_rnames); i++)
+		//{
+		//	var _reactName = _rnames[i];
+		//	var _reactDependencies = reactionGraph[$ _reactName];
 			
-			show_debug_message($"Reaction {i+1}: {_reactName}, {_reactDependencies}");
-		}
+		//	show_debug_message($"Reaction {i+1}: {_reactName}, {_reactDependencies}");
+		//}
 		
 		
 		/*
