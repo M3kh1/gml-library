@@ -602,7 +602,6 @@ function plannerGOAP(_allActions) constructor
 	
 	
 	
-	
 	// Generate a unique cache key for a given start state and goal conditions.
 	// This key is used to store and retrieve plans from the plan_cache.
 	generateCacheKey = function(_startState, _goalConditions)
@@ -1643,6 +1642,64 @@ function plannerGOAP(_allActions) constructor
 	}
 
 	
+	sortActionsByScore = function(_collectedActs, _goalState)
+	{
+		var action_scores = [];
+
+		for (var i = 0; i < array_length(_collectedActs); ++i)
+		{
+			var action = _collectedActs[i];
+				
+			var _act = allActions[$ action];
+				
+			var effects = _act.reactions; // Assume this is a ds_map
+
+			var _score = 0;
+			var keys = struct_get_names(effects);
+			for (var k = 0; k < array_length(keys); ++k)
+			{
+			    var key = keys[k];
+
+			    // Exact match (key and value) is best
+			    if (struct_exists(_goalState, key))// && struct_get(_goalState, key) == struct_get(effects, key))
+				{
+			        _score += 3;
+			    }
+			    // Partial match (key only) is still useful
+			    else if (struct_exists(_goalState, key))
+				{
+			        _score += 1;
+			    }
+			}
+
+			if (_score >= 0)
+			{
+				array_push(action_scores, { name: action, score: _score });
+				//show_debug_message($"Sorted: {action} , Score: {_score}");
+			}
+				
+			//array_push(action_scores, {name: action, score: _score});
+		}
+
+
+		array_sort(action_scores, function(a,b)
+		{
+			return (a.score < b.score);
+			
+		});
+			
+		//show_debug_message($"action_scores: {action_scores}");
+			
+		var _tempActs = [];
+		for(var i=0; i<array_length(action_scores); i++)
+		{
+			var _act = action_scores[i];
+			array_push(_tempActs, _act.name);
+		}
+		
+		return _tempActs;
+			
+	}
 
 
 	#endregion
@@ -1770,11 +1827,6 @@ function plannerGOAP(_allActions) constructor
 		var _startMS = current_time;
 		
 		
-		var _relevantActions = getPlanActionNames(structToArray(allActions)); // im Dynamically gonna Prune actions per node ltr
-		
-		
-		//show_debug_message($"Init Actions: {_relevantActions}");
-		
 		// cached data
 		var _visitedNodes = {};				// stateHash -> best node
 		var _stateActionsMap = {};			// track actions tried on each state (state hash -> struct of action names)
@@ -1843,10 +1895,6 @@ function plannerGOAP(_allActions) constructor
 			nodeData.expanded++;
 			
 
-			if (_nonDeterministic) _relevantActions = array_shuffle(_relevantActions);
-
-
-
 			// dynamic filtering
 			var _unmetGoalKeys = getUnmetConditionsIterative(_goalState, _currentState);
 			var _collectedActs;
@@ -1867,14 +1915,9 @@ function plannerGOAP(_allActions) constructor
 			var _filterResult = filterActionsByNegativeEffects(_collectedActs, _currentState, _unmetGoalKeys, _goalState);
 			_collectedActs = _filterResult.filteredActions; // Get the filtered array
 			
-			
-			
 			//show_debug_message($"Filtered Actions ({array_length(_collectedActs)}): {_collectedActs}");
-
-			// Score and sort actions here maybe:
 			
-			
-			
+			_collectedActs = sortActionsByScore(_collectedActs, _goalState);
 			
 			nodeData.accumulatedHeuristic += (_node.fCost - _node.gCost - _node.hCost);
 			
@@ -2029,11 +2072,7 @@ function plannerGOAP(_allActions) constructor
 				
 			}
 			
-			
-			
 			//show_debug_message("[ Finished Expanding Relevant Actions ]");
-			
-
 			
 		}
 		
@@ -2046,8 +2085,6 @@ function plannerGOAP(_allActions) constructor
 			var _pnames = getPlanActionNames(_plan);
 			_finalPlan = _pnames;
 			var _pLen = array_length(_finalPlan);
-			
-			
 			
 			reportNodeData(_pLen);
 		}
