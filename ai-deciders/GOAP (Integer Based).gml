@@ -602,24 +602,6 @@ function plannerGOAP(_allActions) constructor
 	
 	
 	
-	getUnmetConditions = function(_conditions, _state)
-	{
-		var unmet = [];
-		var _keys = struct_get_names(_conditions);
-
-		for (var i = 0; i < array_length(_keys); i++)
-		{
-			var _key = _keys[i];
-
-			if (!keyMatches(_state, _conditions, _key))
-			{
-				array_push(unmet, _key);
-			}
-		}
-	
-		return unmet;
-	}
-
 	
 	// Generate a unique cache key for a given start state and goal conditions.
 	// This key is used to store and retrieve plans from the plan_cache.
@@ -953,7 +935,9 @@ function plannerGOAP(_allActions) constructor
 	    return enablingActions;
 	}
 
-
+	
+	
+	// non-explicit + explicit keys
 	getUnmetConditionsIterative = function(_conditions, _state)
 	{
 	    var unmetConditions = {}; // Use a dictionary/object to store unique unmet keys
@@ -1016,9 +1000,11 @@ function plannerGOAP(_allActions) constructor
 	    var out = [];
 
 	    // Filter to ensure only truly unmet conditions from the original state are included
-	    for (var i = 0; i < array_length(resultKeys); i++) {
+	    for (var i = 0; i < array_length(resultKeys); i++)
+		{
 	        var key = resultKeys[i];
-	        if (!keyMatches(_state, _conditions, key)) {
+	        if (!keyMatches(_state, _conditions, key))
+			{
 	            array_push(out, key);
 	        }
 	    }
@@ -1027,6 +1013,89 @@ function plannerGOAP(_allActions) constructor
 	}
 
 	
+	// explicit keys 
+	getUnmetConditions = function(_conditions, _state)
+	{
+		var unmet = [];
+		var _keys = struct_get_names(_conditions);
+
+		for (var i = 0; i < array_length(_keys); i++)
+		{
+			var _key = _keys[i];
+
+			if (!keyMatches(_state, _conditions, _key))
+			{
+				array_push(unmet, _key);
+			}
+		}
+	
+		return unmet;
+	}
+
+
+	// non-explicit keys
+	getUnmetNonExplicitConditions = function(_goal, _state)
+	{
+	    var allUnmet = {};
+	    var visitedKeys = [];
+	    var queue = [];
+
+	    var explicitKeys = struct_get_names(_goal);
+	    var initialUnmetExplicit = [];
+
+	    // Gather initial unmet explicit keys
+	    for (var i = 0; i < array_length(explicitKeys); i++) {
+	        var key = explicitKeys[i];
+	        if (!keyMatches(_state, _goal, key)) {
+	            array_push(initialUnmetExplicit, key);
+	            array_push(queue, key);
+	            array_push(visitedKeys, key);
+	            allUnmet[$ key] = true;
+	        }
+	    }
+
+	    // BFS through condition graph
+	    while (array_length(queue) > 0) {
+	        var currentKey = array_shift(queue);
+	        var producers = conditionGraph[$ currentKey];
+	        if (producers == undefined) continue;
+
+	        for (var j = 0; j < array_length(producers); j++) {
+	            var actName = producers[j];
+	            var action = allActions[$ actName];
+	            if (action == undefined || action.conditions == undefined) continue;
+
+	            var preKeys = struct_get_names(action.conditions);
+	            for (var k = 0; k < array_length(preKeys); k++) {
+	                var preKey = preKeys[k];
+
+	                if (!keyMatches(_state, action.conditions, preKey)) {
+	                    if (!array_contains(visitedKeys, preKey)) {
+	                        array_push(queue, preKey);
+	                        array_push(visitedKeys, preKey);
+	                    }
+	                    allUnmet[$ preKey] = true;
+	                }
+	            }
+	        }
+	    }
+
+	    // Remove initial unmet explicit keys from allUnmet keys
+	    var allUnmetKeys = struct_get_names(allUnmet);
+	    var nonExplicitUnmet = [];
+
+	    for (var i = 0; i < array_length(allUnmetKeys); i++)
+		{
+	        var key = allUnmetKeys[i];
+	        if (!array_contains(initialUnmetExplicit, key))
+			{
+	            array_push(nonExplicitUnmet, key);
+	        }
+	    }
+
+	    return nonExplicitUnmet;
+	}
+
 	
 	
 	trimActionsToUnmet = function(relevantActions, unmetKeys)
@@ -1222,6 +1291,9 @@ function plannerGOAP(_allActions) constructor
 	{
 	    var _totalHeuristicCost = 0;
 	    var _unmetConditions = getUnmetConditionsIterative(_goalState, _currentState); 
+		
+		//_unmetConditions = planLog.doProfile("getUnmetConditionsIterative", getUnmetConditionsIterative, [_goalState, _currentState]);
+		
 		var _minCostPerKey = actionCostData.MinCostPerKey;
 		var _minCostToAchieve = actionCostData.MinCostToAchieve;
 
@@ -1357,7 +1429,6 @@ function plannerGOAP(_allActions) constructor
 	}
 	
 	
-	
 	collectRelevantActions = function(_conditionsToMeet)
 	{
 	    // Use a struct to track all unique actions encountered during the traversal.
@@ -1418,7 +1489,6 @@ function plannerGOAP(_allActions) constructor
 	    // convert the keys of the _collectedActions struct into a final array to return.
 	    return struct_get_names(_collectedActions);
 	}
-
 
 
 	filterActionsByNegativeEffects = function(_actions, _currentState, _unmetGoalKeys, _goalState)
@@ -1522,100 +1592,129 @@ function plannerGOAP(_allActions) constructor
 	}
 
 
-	
-
-	filterActionsByPositiveEffects = function(_actions, _currentState, _unmetGoalKeys, _goalState)
+	getConditionsToSatisfyKey = function(key, _state, visited)
 	{
-	    var _filteredActions = [];
-	    var _positiveCountThisCall = 0;
+	    if (visited == undefined) visited = [];
 
-	    for (var i = 0; i < array_length(_actions); i++)
-	    {
-	        var _actName = _actions[i];
-	        var _act = allActions[$ _actName];
-	        if (_act == undefined) continue;
+	    var requiredConditions = {};
 
-	        var _hasPositiveEffect = false;
+	    // Stop if already satisfied in the current state
+	    if (keyMatches(_state, {key: true}, key)) return requiredConditions;
 
-	        for (var j = 0; j < array_length(_unmetGoalKeys); j++)
-	        {
-	            var _unmetKey = _unmetGoalKeys[j];
+	    // Avoid cycles
+	    if (array_contains(visited, key)) return requiredConditions;
+	    array_push(visited, key);
 
-	            if (!struct_exists(_act.reactions, _unmetKey)) continue;
+	    var producers = conditionGraph[$ key];
+	    if (producers == undefined) return requiredConditions;
 
-	            var _reactionValue = _act.reactions[$ _unmetKey];
-	            var _currentValue = _currentState[$ _unmetKey];
-	            var _goalDefinition = undefined;
-	            if (struct_exists(_goalState, _unmetKey)) {
-	                _goalDefinition = _goalState[$ _unmetKey];
-	            } else {
-	                continue; 
-	            }
+	    for (var i = 0; i < array_length(producers); i++) {
+	        var actName = producers[i];
+	        var action = allActions[$ actName];
+	        if (action == undefined || action.conditions == undefined) continue;
 
-	            if (is_struct(_goalDefinition) && struct_exists(_goalDefinition, "comparison") && is_numeric(_reactionValue))
+	        var condKeys = struct_get_names(action.conditions);
+			
+	        for (var j = 0; j < array_length(condKeys); j++)
+			{
+	            var condKey = condKeys[j];
+
+	            if (!keyMatches(_state, action.conditions, condKey))
 				{
-				    var _operator = _goalDefinition.comparison;
-				    var _targetValue = _goalDefinition.value;
+	                // Add this unmet condition
+	                requiredConditions[$ condKey] = action.conditions[$ condKey];
 
-				    switch (_operator)
-				    {
-				        case ">=": 
-				        case ">":
-				            if (_reactionValue > 0) _hasPositiveEffect = true;
-				            break;
-
-				        case "<=": 
-				        case "<":
-				            if (_reactionValue < 0) _hasPositiveEffect = true;
-				            break;
-
-				        case "=":
-				            // Don't use currentValue — just check reaction *moves* toward value
-				            if (_reactionValue != 0) _hasPositiveEffect = true;
-				            break;
-				    }
-				}
-
-	            else if (!is_struct(_goalDefinition))
-	            {
-	                // For booleans/enums, action's effect matches the goal value — good
-	                if (_reactionValue == _goalDefinition) _hasPositiveEffect = true;
+	                // Recursively collect sub-conditions
+	                var subReqs = getConditionsToSatisfyKey(condKey, _state, visited);
+	                var subKeys = struct_get_names(subReqs);
+	                for (var s = 0; s < array_length(subKeys); s++)
+					{
+	                    var subKey = subKeys[s];
+	                    requiredConditions[$ subKey] = subReqs[$ subKey];
+	                }
 	            }
-				
-				// If no clearly positive effect was found, include fallback if it affects the key
-				//if (!_hasPositiveEffect)
-				//{
-				//    // Still allow if the action changes the unmet key at all
-				//    if (struct_exists(_act.reactions, _unmetKey))
-				//    {
-				//        _hasPositiveEffect = true;
-				//    }
-				//}
-
-				
-	            if (_hasPositiveEffect) break;
 	        }
 
-	        if (_hasPositiveEffect)
-	        {
-	            array_push(_filteredActions, _actName);
-	            _positiveCountThisCall++;
-	        }
+	        // Assume first producer is enough for now
+	        break;
 	    }
 
-	    return {
-	        filteredActions: _filteredActions,
-	        positiveCount: _positiveCountThisCall
-	    };
+	    return requiredConditions;
 	}
 
-
-	
 	
 
 
 	#endregion
 	
+	
+	#region		---[ Node Data Collection ]---
+	
+	nodeData = {
+		pruned: 0,
+		expanded: 0,
+		stale: 0,
+		accumulatedHeuristic: 0
+	}
+
+
+	resetNodeData = function()
+	{
+		nodeData.pruned = 0;
+		nodeData.expanded = 0;
+		nodeData.stale = 0;
+		nodeData.accumulatedHeuristic = 0;
+	}
+
+
+	reportNodeData = function(_planLength)
+	{
+		
+		
+		/*
+			Summary of all Node DATA
+			
+				If Prune Ratio goes up, you’re cutting out more useless nodes early, which is good.
+				If Efficiency (expanded/total) increases, you’re expanding a higher portion of relevant nodes, also good.
+				If Branching Factor drops, your planner is focusing more tightly on promising paths.
+				If Goal Efficiency improves, more of your expansions are actually contributing to the final plan.
+		*/
+		
+		var _truePruned = nodeData.pruned - nodeData.stale;
+		var _totalNodes = _truePruned + nodeData.expanded;
+
+		var _pruneRatio = 0;
+		var _expansionEfficiency = 0;
+		var _branchingFactor = 0;
+		var _goalEfficiency = 0;
+		var _reExpansionRate = 0;
+		var _avgHeuristicRate = 0;
+
+		if (_totalNodes > 0) {
+			_pruneRatio = _truePruned / _totalNodes;
+			_expansionEfficiency = nodeData.expanded / _totalNodes;
+		}
+
+		if (_planLength > 0) {
+			_branchingFactor = nodeData.expanded / _planLength;
+		}
+
+		if (nodeData.expanded > 0)
+		{
+			_goalEfficiency = 1 - ((nodeData.expanded - _planLength) / nodeData.expanded);
+			_reExpansionRate = nodeData.stale / nodeData.expanded;
+			_avgHeuristicRate = nodeData.accumulatedHeuristic / nodeData.expanded;
+		}
+		
+		
+		
+		show_debug_message($"Node Data: [Total: {_totalNodes}, Pruned: {_truePruned}, Expanded: {nodeData.expanded}, Stale: {nodeData.stale}, Prune Ratio: {_pruneRatio}]");
+		show_debug_message($"Node Data: [Efficiency: {_expansionEfficiency}, Branching: {_branchingFactor}, Goal Efficiency: {_goalEfficiency}]");
+		show_debug_message($"Node Data: [Re-Expansion Rate: {_reExpansionRate}, Average Heuristic Rate: {_avgHeuristicRate}]");
+			
+	}
+
+	#endregion	
 	
 	function astarNode(_state, _action, _parent, _gCost, _hCost) constructor
 	{
@@ -1628,13 +1727,43 @@ function plannerGOAP(_allActions) constructor
 	}
 	
 	
-	
-	
-	
+	buildSubGoal = function(_startState, _goalState)
+	{
+		var _unmet = getUnmetNonExplicitConditions(_goalState, _startState);
+		show_debug_message($"Non-Explicit Keys: {_unmet}");
+
+		var _mergedSubGoal = {};
+
+		for (var i = 0; i < array_length(_unmet); i++)
+		{
+			var _key = _unmet[i];
+			var _con = getConditionsToSatisfyKey(_key, _startState);
+
+			var _keys = struct_get_names(_con);
+			for (var j = 0; j < array_length(_keys); j++)
+			{
+				var _condKey = _keys[j];
+
+				// Optional: Prevent overwriting if key already exists
+				if (!struct_exists(_mergedSubGoal, _condKey))
+				{
+					_mergedSubGoal[$ _condKey] = _con[$ _condKey];
+				}
+			}
+		}
+
+		show_debug_message("Merged Sub Goal:");
+		show_debug_message(_mergedSubGoal);
+
+		// Return or use mergedSubGoal as needed
+		return _mergedSubGoal;
+	}
+
 
 	findPlan = function(_startState, _goalState)
 	{
 		
+		resetNodeData();
 		
 		#region	<Init Vars>
 		
@@ -1680,6 +1809,8 @@ function plannerGOAP(_allActions) constructor
 		
 		#endregion
 		
+		_printEvery = false;
+		
 		show_debug_message($"Goal State: {_goalState}");
 		show_debug_message($"Start State: {_startState}");
 		
@@ -1689,15 +1820,12 @@ function plannerGOAP(_allActions) constructor
 			
 			var _node = ds_priority_delete_min(_open);
 			
-			//var _printEvery = (_expanded mod 1 == 0);
-			var _printEvery = (false);
+			
 			
 			// Early termination: if best goal found and next node's fCost is >= best goal fCost, break
 		    if (_bestGoalNode != noone && _node.fCost >= _bestFSoFar) break; // no better solution 
 			
 			
-
-
 			var _currentState = _node.state;
 			var _currentAction = _node.action;
 			var _stateHash = hashState(_currentState);
@@ -1711,13 +1839,9 @@ function plannerGOAP(_allActions) constructor
 				continue; // Stale node
 			}
 				    
-			_expanded++;
 			
+			nodeData.expanded++;
 			
-			
-
-			
-				
 
 			if (_nonDeterministic) _relevantActions = array_shuffle(_relevantActions);
 
@@ -1751,12 +1875,11 @@ function plannerGOAP(_allActions) constructor
 			
 			
 			
-			// before expansion
 			
-			_accumulatedNode += (_node.fCost - _node.gCost - _node.hCost);
+			nodeData.accumulatedHeuristic += (_node.fCost - _node.gCost - _node.hCost);
 			
 			
-			//show_debug_message("[ Expanding Relevant Actions ==========================]");
+			//show_debug_message("[ Expanding Relevant Actions ]");
 			
 			// Expand all relavant actions
 			for (var i = 0; i < array_length(_collectedActs); i++)
@@ -1773,7 +1896,7 @@ function plannerGOAP(_allActions) constructor
 				if (!checkKeysMatch(_act.conditions, _currentState))
 				{
 					if (_printEvery) show_debug_message($"Action ({_actName}) conditions not met.");
-					_pruned++;
+					nodeData.pruned++;
 					continue;
 				}
 				
@@ -1792,28 +1915,19 @@ function plannerGOAP(_allActions) constructor
 				// Check if action already tried on this state
 				if (!struct_exists(_stateActionsMap, _simHash))
 				{
-				    var _newActionSet = {};
-				    struct_set(_stateActionsMap, _simHash, _newActionSet);
+					var _newActionSet = {};
+					struct_set(_stateActionsMap, _simHash, _newActionSet);
 				}
 				
 				
 				var _actionSet = struct_get(_stateActionsMap, _simHash);
 				if (struct_exists(_actionSet, _actName))
 				{
-				    // This action was already tried on this state, prune it
+					// This action was already tried on this state, prune it
 					if (_printEvery) show_debug_message("This action was already tried on this state");
-				    _pruned++;
-				    continue;
+					nodeData.pruned++;
+					continue;
 				}
-				
-				
-				//if ancestorHasState(_node, _simState)
-				//{
-				//	if (_printEvery) show_debug_message("After SIM, Ancestor with same action path.");
-				//	_pruned++;
-				//	continue;
-				//}
-				
 				
 				
 				var _hAfter = goalHeuristic(_simState, _goalState);
@@ -1838,18 +1952,10 @@ function plannerGOAP(_allActions) constructor
 					
 					*/
 					
-				    //show_debug_message("Heuristic corrected: " + string(_hAfter) + " -> " + string(_newNode.hCost));
+					//show_debug_message("Heuristic corrected: " + string(_hAfter) + " -> " + string(_newNode.hCost));
 					
 				}
 				
-				
-				// agressively prunes,	advise against it
-				//if (_newNode.hCost > _node.hCost)
-				//{
-				//	if (_printEvery) show_debug_message($"Worsened heuristic: {_node.hCost} -> {_newNode.hCost}, skipping");
-				//	_pruned++;
-				//	continue;
-				//}
 				
 				#endregion
 				
@@ -1862,33 +1968,34 @@ function plannerGOAP(_allActions) constructor
 
 				if (struct_exists(_visitedNodes, _simHash))
 				{
-				    _staleNodes++;
-				    var _existingOldNode = _visitedNodes[$ _simHash];
+				
+					nodeData.stale++;
+					var _existingOldNode = _visitedNodes[$ _simHash];
 
-				    if (_existingOldNode.fCost < _newNode.fCost)
+					if (_existingOldNode.fCost < _newNode.fCost)
 					{
-				        _pruned++;
-				        continue;
-				    }
+					    nodeData.pruned++;
+					    continue;
+					}
 
-				    if (_newNode.gCost >= _existingOldNode.gCost)
+					if (_newNode.gCost >= _existingOldNode.gCost)
 					{
-				        _pruned++;
-				        continue;
-				    }
+					    nodeData.pruned++;
+					    continue;
+					}
 
-				    enqueueNode = true; // better path
+					enqueueNode = true; // better path
 				}
 				else
 				{
-				    enqueueNode = true; // new state
+					enqueueNode = true; // new state
 				}
 
 				if (enqueueNode)
 				{
-				    struct_set(_visitedNodes, _simHash, _newNode);
-				    var priority = _newNode.fCost + (_newNode.hCost * 0.0001);
-				    ds_priority_add(_open, _newNode, priority);
+					struct_set(_visitedNodes, _simHash, _newNode);
+					var priority = _newNode.fCost + (_newNode.hCost * 0.0001);
+					ds_priority_add(_open, _newNode, priority);
 				}
 
 				
@@ -1900,15 +2007,15 @@ function plannerGOAP(_allActions) constructor
 				{
 					var _f = _newNode.gCost + _newNode.hCost;
 
-				    if (_f < _bestFSoFar)
-				    {
-				        _bestFSoFar = _f;
-				        _bestGoalNode = _newNode;
-				    }
+					if (_f < _bestFSoFar)
+					{
+					    _bestFSoFar = _f;
+					    _bestGoalNode = _newNode;
+					}
 					
 					// avoid retrying actions on terminal states.
 					struct_set(_actionSet, _actName, true);
-				    continue;
+					continue;
 				}
 				
 				#endregion
@@ -1922,7 +2029,9 @@ function plannerGOAP(_allActions) constructor
 				
 			}
 			
-			//show_debug_message("[ Finished Expanding Relevant Actions =================]");
+			
+			
+			//show_debug_message("[ Finished Expanding Relevant Actions ]");
 			
 
 			
@@ -1938,46 +2047,13 @@ function plannerGOAP(_allActions) constructor
 			_finalPlan = _pnames;
 			var _pLen = array_length(_finalPlan);
 			
-		
-			
-			/*
-				Summary of all Node DATA
-			
-					If Prune Ratio goes up, you’re cutting out more useless nodes early, which is good.
-					If Efficiency (expanded/total) increases, you’re expanding a higher portion of relevant nodes, also good.
-					If Branching Factor drops, your planner is focusing more tightly on promising paths.
-					If Goal Efficiency improves, more of your expansions are actually contributing to the final plan.
-			*/
-			
-			var _truePruned = _pruned - _staleNodes;
-			//_pruned = _truePruned;
-			var _totalNodes = (_truePruned + _expanded);
-			var _prunedRatio = (_truePruned / _totalNodes);					 //cutting out #% of nodes early.
-			var _expansionEfficiency = (_expanded / _totalNodes);		 //confirms about #% of nodes got fully expanded.
-			var _branchingFactor = (_expanded / _pLen);					 //for every step in the plan, you explored about # nodes.
-			var _goalEfficiency = 1 - ((_expanded - _pLen) / _expanded); //only #% of expanded nodes ended up on the final plan path.
-			var _reExpansionRate = (_staleNodes / _expanded);
-			var _avgHeuristicRate = (_accumulatedNode / _expanded);
-			
-			show_debug_message($"Node Data: [Total: {_totalNodes}, Pruned: {_truePruned}, Expanded: {_expanded}, Stale: {_staleNodes}, Prune Ratio: {_prunedRatio}]");
-			show_debug_message($"Node Data: [Efficiency: {_expansionEfficiency}, Branching: {_branchingFactor}, Goal Efficiency: {_goalEfficiency}]");
-			show_debug_message($"Node Data: [Re-Expansion Rate: {_reExpansionRate}, Average Heuristic Rate: {_avgHeuristicRate}]");
 			
 			
-			
-			/*
-					Node Data: [Total: 1120, Pruned: 320, Expanded: 800, Stale: 4069, Prune Ratio: 0.29]
-					Node Data: [Efficiency: 0.71, Branching: 57.14, Goal Efficiency: 0.02]
-					Node Data: [Re-Expansion Rate: 5.09, Average Heuristic Rate: 0.00]
-					[GOAP/Brain][debug] ~ New plan: (14) generated successfully in (3586 ms) so abt. (215 frames).
-			
-			
-			*/
+			reportNodeData(_pLen);
 		}
 		
 		return _finalPlan;
 	}
-	
 	
 	
 	createPlan = function(_startState, _goalState)
@@ -1998,65 +2074,18 @@ function plannerGOAP(_allActions) constructor
 		
 		
 		
-		//show_debug_message($"Con Graph: {conditionGraph}");
-		//show_debug_message($"React Graph: {reactionGraph}");
+		var _subGoalState = buildSubGoal(_startState, _goalState);
 		
-		//show_debug_message($"Condition Graph");
-		//var _names = struct_get_names(conditionGraph);
-		//for(var i=0; i<array_length(_names); i++)
-		//{
-		//	var _conName = _names[i];
-		//	var _conDependencies = conditionGraph[$ _conName];
-			
-			
-		//	show_debug_message($"Condition {i+1}: {_conName}, {_conDependencies}");
-		//}
+		//show_debug_message($"Sub Goal Target State: {_subGoalState}");
+		//show_debug_message($"Main Goal Target State: {_goalState}");
 		
 		
-		//show_debug_message($"Reaction Graph");
-		//var _rnames = struct_get_names(reactionGraph);
-		//for(var i=0; i<array_length(_rnames); i++)
-		//{
-		//	var _reactName = _rnames[i];
-		//	var _reactDependencies = reactionGraph[$ _reactName];
-			
-		//	show_debug_message($"Reaction {i+1}: {_reactName}, {_reactDependencies}");
-		//}
-		
-		
-		/*
-		
-			well if i do chunking maybe i could score the conditions as well to help
-			and also combine each individual parts/conditions of the goals to create semi-complex sub-goals.
-			it wont really be complex because it would combine 1 or more conditions that go hand in hand.
-			then group them into a sub-goal and then chunking  the plan up would look more realistic
-			The plan would be more optimized than doing each condition and stacking them individually
-			
-			
-			Decomposition: Breaking a big goal into smaller, ordered subgoals.
-			Master Planner: The high-level orchestrator (createPlan).
-			Mini-Planner: The low-level A* searcher (findPlan).
-			Simulated World State: A copy of the world state that the Master Planner updates internally as it plans, to ensure each mini-plan starts from the correct hypothetical state.
-			Compound Goals: Mini-planner goals that include both the immediate subgoal conditions and critical maintained conditions from the overall plan.
-			
-			
-			The Plan:
-
-			Define Goal Decompositions (Methods):
-				Create a global data structure (e.g., global.goalDecompositions struct) that maps high-level goal IDs (strings) to their hierarchical breakdowns.
-				Each breakdown (method) should include:
-				An overall_goal struct (the full goal findPlan would solve monolithically).
-				A subgoals array, where each element is a struct defining a mini-goal (e.g., { key: "Scrap", value: 50, type: "numerical", comparison: ">=", description: "..." }).
-				(Optional: preconditions for the method itself, to aid in selection).
-		
-		*/
-		
-		// try to chunk up the main plan by a goals conditions?
-		
-		
+		//var _subGoalPlan = findPlan(_startState, _subGoalState);
 		var _finalPlan = findPlan(_startState, _goalState);
 		
 		
+		//show_debug_message($"Sub Goal Plan: {_subGoalPlan}");
+		//show_debug_message($"Full Goal Plan: {_finalPlan}");
 		
 		
 		
