@@ -41,21 +41,23 @@ function structToArray(_struct)
 
 function hashState(_state)
 {
-	var keys = struct_get_names(_state);
-	array_sort(keys, true); // VERY IMPORTANT: Sort keys alphabetically
-	var str = "{";
-	for (var i = 0; i < array_length(keys); i++)
-	{
-	    var key = keys[i];
-	    var value = _state[$ key];
-	    str += string(key) + ":" + string(value); // Convert key and value to string consistently
-	    if (i < array_length(keys) - 1)
-		{
-	        str += ",";
-	    }
-	}
-	str += "}"; // Add delimiters to the start/end for clarity
-	return str;
+	//var keys = struct_get_names(_state);
+	//array_sort(keys, true); // VERY IMPORTANT: Sort keys alphabetically
+	//var str = "{";
+	//for (var i = 0; i < array_length(keys); i++)
+	//{
+	//    var key = keys[i];
+	//    var value = _state[$ key];
+	//    str += string(key) + ":" + string(value); // Convert key and value to string consistently
+	//    if (i < array_length(keys) - 1)
+	//	{
+	//        str += ",";
+	//    }
+	//}
+	//str += "}"; // Add delimiters to the start/end for clarity
+	//return str;
+	
+	return string(_state);
 }
 
 
@@ -205,7 +207,7 @@ function brainGOAP() constructor
 	    var _endTime = (current_time - _startTime);
 		
 		
-		Log.logDebug($"New plan: ({array_length(new_plan)}) generated successfully in ({_endTime} ms) so abt. ({round(_endTime/16.67)} frames).");
+		Log.logDebug($"New plan: ({array_length(new_plan)}) generated successfully in ({_endTime} ms | {_endTime/1000} s) so abt. ({round(_endTime/(16.67))} frames).");
 		
 		printPlan();
 		
@@ -494,8 +496,9 @@ function plannerGOAP(_allActions) constructor
 {
 	planLog = new Logger("GOAP/Planner", true, [LogLevel.info, LogLevel.warning, LogLevel.profile]);
 	
-    plan_cache = {};        // Cache for previously generated plans
-	
+    plan_cache = {};			// Cache for previously generated plans
+	heuristic_cache = {};
+	simulation_cache = {};
 	
 	allActions = _allActions;
 	
@@ -504,7 +507,9 @@ function plannerGOAP(_allActions) constructor
 	
 	actionCostData = undefined; // init ONCE
 	
+	
 	#region	--- Helper Functions ---
+
 
 	setupActionData = function()
 	{
@@ -1286,68 +1291,6 @@ function plannerGOAP(_allActions) constructor
 	
 	
 	
-	goalHeuristic = function(_currentState, _goalState)
-	{
-	    var _totalHeuristicCost = 0;
-	    var _unmetConditions = getUnmetConditionsIterative(_goalState, _currentState); 
-		
-		//_unmetConditions = planLog.doProfile("getUnmetConditionsIterative", getUnmetConditionsIterative, [_goalState, _currentState]);
-		
-		var _minCostPerKey = actionCostData.MinCostPerKey;
-		var _minCostToAchieve = actionCostData.MinCostToAchieve;
-
-	    var _avg_cost = getAverageActionCost(); // Still a useful fallback
-
-	    for (var i = 0; i < array_length(_unmetConditions); i++)
-	    {
-	        var _key = _unmetConditions[i];
-
-        
-	        var _goalDefinition = _goalState[$ _key]; 
-
-	        // --- NEW/UPDATED LOGIC: Handle missing keys using calculated heuristic data ---
-	        if (!struct_exists(_currentState, _key))
-	        {
-	            var cost_for_missing_key = _avg_cost * 2; // Default fallback if no specific data is found
-
-	            if (is_struct(_goalDefinition)) // It's a numerical comparison goal (e.g., {comparison:">=", value:10})
-	            {
-	                // Estimate the cost to get to the required amount from zero, using cost_per_unit
-	                var needed_amount = _goalDefinition.value;
-                
-	                // Use global.GOAP_MinCostPerUnit_Data if available, otherwise fallback to average
-	                var cost_per_unit = struct_exists(_minCostPerKey, _key) ? _minCostPerKey[$ _key] : _avg_cost;
-                
-	                cost_for_missing_key = needed_amount * cost_per_unit;
-	                if (cost_for_missing_key <= 0) cost_for_missing_key = _avg_cost; // Ensure minimum if goal value is 0 or less
-	            }
-	            else // It's a simple boolean/value goal (e.g., true, "item_name", or 0/1)
-	            {
-	                var target_value_str = string(_goalDefinition);
-                
-	                // Use global.GOAP_MinCostToAchieve_Data for direct lookup
-	                if (struct_exists(_minCostToAchieve, _key) && struct_exists(_minCostToAchieve[$ _key], target_value_str))
-	                {
-	                    cost_for_missing_key = _minCostToAchieve[$ _key][target_value_str];
-	                }
-	            }
-            
-	            _totalHeuristicCost += cost_for_missing_key;
-	            continue; // Move to the next unmet condition
-	        }
-
-	        // --- Existing logic for keys that exist but don't meet the goal ---
-	        var _currentValue = _currentState[$ _key];
-
-	        // Now, use the getConditionGap function, which will also be updated to use the new data
-	        // We'll pass the global heuristic data to getConditionGap
-	        var _val = getConditionGap(_currentValue, _goalDefinition, _key);
-	        _totalHeuristicCost += _val;
-	    }
-
-	    return _totalHeuristicCost;
-	}
-	
 	
 	getConditionGap = function(_state_value, _target_condition_value, _key_name = "unknown_key")
 	{
@@ -1374,7 +1317,11 @@ function plannerGOAP(_allActions) constructor
 	        {
 	            cost_per_unit = _minCostPerKey[$ _key_name];
 	        }
-	        if (cost_per_unit <= 0) cost_per_unit = _avg_cost; // Defensive: ensure non-zero/positive cost
+	        if (cost_per_unit <= 0) 
+			{
+				//show_debug_message("Using avg. cost");
+				cost_per_unit = _avg_cost; // Defensive: ensure non-zero/positive cost
+			}
 
 	        switch (operator)
 	        {
@@ -1397,7 +1344,7 @@ function plannerGOAP(_allActions) constructor
 
 	            default:
 	                planLog.logWarning($"getConditionGap: Unknown comparison operator '{operator}' for key '{_key_name}'.");
-	                return infinity;
+	                return 999999999;
 	        }
 	    }
 	    // --- Handle Simple Boolean/Value Conditions (e.g., HasWeapon: true, Location: "Town") ---
@@ -1411,10 +1358,11 @@ function plannerGOAP(_allActions) constructor
 	        }
 	        else
 	        {
-	            // Use global.GOAP_MinCostToAchieve_Data for specific target values
 	            var min_cost_for_value = _avg_cost; // Fallback to average cost
+				
 	            var target_value_str = string(target_simple_value); // Convert to string for lookup
-
+				//show_debug_message($"AVG COST: {min_cost_for_value}");
+				
 	            if (struct_exists(_minCostToAchieve, _key_name))
 	            {
 	                if (struct_exists(_minCostToAchieve[$ _key_name], target_value_str))
@@ -1422,6 +1370,9 @@ function plannerGOAP(_allActions) constructor
 	                    min_cost_for_value = _minCostToAchieve[$ _key_name][$target_value_str];
 	                }
 	            }
+				
+				//show_debug_message($"AVG COST: {min_cost_for_value}");
+				
 	            return min_cost_for_value;
 	        }
 	    }
@@ -1493,7 +1444,6 @@ function plannerGOAP(_allActions) constructor
 	filterActionsByNegativeEffects = function(_actions, _currentState, _unmetGoalKeys, _goalState)
 	{
 	    var _filteredActions = [];
-	    var _prunedCountThisCall = 0; // Local counter for this function call
 
 	    for (var i = 0; i < array_length(_actions); i++)
 	    {
@@ -1571,24 +1521,21 @@ function plannerGOAP(_allActions) constructor
 	                }
 	            }
 
-	            if (_hasUndesirableEffect) {
-	                break; 
-	            }
+	            if (_hasUndesirableEffect) break; 
+	            
 	        }
 
-	        if (_hasUndesirableEffect) {
-	            _prunedCountThisCall++; // Increment local counter
-	        } else {
+	        if (!_hasUndesirableEffect)
+			{
 	            array_push(_filteredActions, _actName);
 	        }
 	    }
     
 	    // Return a struct containing both the filtered actions and the count
-	    return {
-	        filteredActions: _filteredActions,
-	        prunedCount: _prunedCountThisCall
-	    };
+	    return _filteredActions;
+	    
 	}
+
 
 
 	getConditionsToSatisfyKey = function(key, _state, visited)
@@ -1705,13 +1652,103 @@ function plannerGOAP(_allActions) constructor
 	#endregion
 	
 	
+	
+	goalHeuristic = function(_currentState, _goalState)
+	{
+		var _startMS = current_time;
+		
+	    var _totalHeuristicCost = 0;
+	    var _unmetConditions = getUnmetConditionsIterative(_goalState, _currentState); 
+		
+		//_unmetConditions = planLog.doProfile("getUnmetConditionsIterative", getUnmetConditionsIterative, [_goalState, _currentState]);
+		
+		var _minCostPerKey = actionCostData.MinCostPerKey;
+		var _minCostToAchieve = actionCostData.MinCostToAchieve;
+
+	    var _avg_cost = getAverageActionCost(); // Still a useful fallback
+
+	    for (var i = 0; i < array_length(_unmetConditions); i++)
+	    {
+	        var _key = _unmetConditions[i];
+
+        
+	        var _goalDefinition = _goalState[$ _key]; 
+
+	        // --- NEW/UPDATED LOGIC: Handle missing keys using calculated heuristic data ---
+	        if (!struct_exists(_currentState, _key))
+	        {
+	            var cost_for_missing_key = _avg_cost/10; // Default fallback if no specific data is found
+
+	            if (is_struct(_goalDefinition)) // It's a numerical comparison goal (e.g., {comparison:">=", value:10})
+	            {
+	                // Estimate the cost to get to the required amount from zero, using cost_per_unit
+	                var needed_amount = _goalDefinition.value;
+                
+	                // Use global.GOAP_MinCostPerUnit_Data if available, otherwise fallback to average
+	                var cost_per_unit = struct_exists(_minCostPerKey, _key) ? _minCostPerKey[$ _key] : _avg_cost;
+                
+	                cost_for_missing_key = needed_amount * cost_per_unit;
+	                if (cost_for_missing_key <= 0) cost_for_missing_key = _avg_cost; // Ensure minimum if goal value is 0 or less
+	            }
+	            else // It's a simple boolean/value goal (e.g., true, "item_name", or 0/1)
+	            {
+	                var target_value_str = string(_goalDefinition);
+                
+	                // Use global.GOAP_MinCostToAchieve_Data for direct lookup
+	                if (struct_exists(_minCostToAchieve, _key) && struct_exists(_minCostToAchieve[$ _key], target_value_str))
+	                {
+	                    cost_for_missing_key = _minCostToAchieve[$ _key][target_value_str];
+	                }
+	            }
+            
+	            _totalHeuristicCost += cost_for_missing_key;
+	            continue; // Move to the next unmet condition
+	        }
+
+	        // --- Existing logic for keys that exist but don't meet the goal ---
+	        var _currentValue = _currentState[$ _key];
+
+	        // Now, use the getConditionGap function, which will also be updated to use the new data
+	        // We'll pass the global heuristic data to getConditionGap
+	        var _val = getConditionGap(_currentValue, _goalDefinition, _key);
+	        _totalHeuristicCost += _val;
+	    }
+
+
+		//show_debug_message($"Goal Heuristic MS: {current_time - _startMS}");
+
+	    return _totalHeuristicCost;
+	}
+	
+	
+	calculateHeuristic  = function(_currentState, _goalState, _stateHash, _goalStateHash)
+	{
+		var _key = _stateHash + "|" + _goalStateHash;
+		
+		if (struct_exists(heuristic_cache, _key))
+		{
+			var _data = struct_get(heuristic_cache, _key);
+			
+			//show_debug_message("Heuristic cache hit.");
+			
+			return _data;
+		}
+		
+		var _h = goalHeuristic(_currentState, _goalState);
+	    struct_set(heuristic_cache, _key, _h);
+		
+	    return _h;
+	}
+	
+	
 	#region		---[ Node Data Collection ]---
 	
 	nodeData = {
 		pruned: 0,
 		expanded: 0,
 		stale: 0,
-		accumulatedHeuristic: 0
+		actionsTried: 0,
+		accumulatedHeuristic: 0,
 	}
 
 
@@ -1720,11 +1757,12 @@ function plannerGOAP(_allActions) constructor
 		nodeData.pruned = 0;
 		nodeData.expanded = 0;
 		nodeData.stale = 0;
+		nodeData.actionsTried = 0;
 		nodeData.accumulatedHeuristic = 0;
 	}
 
 
-	reportNodeData = function(_planLength)
+	reportNodeData = function(_planLength, _bestGoalNode)
 	{
 		
 		
@@ -1737,7 +1775,13 @@ function plannerGOAP(_allActions) constructor
 				If Goal Efficiency improves, more of your expansions are actually contributing to the final plan.
 		*/
 		
-		var _truePruned = nodeData.pruned - nodeData.stale;
+		var _showData = true;
+		var _showSimpleData = true;
+		
+		
+		if !_showData return;
+		
+		var _truePruned = nodeData.pruned;
 		var _totalNodes = _truePruned + nodeData.expanded;
 
 		var _pruneRatio = 0;
@@ -1745,31 +1789,94 @@ function plannerGOAP(_allActions) constructor
 		var _branchingFactor = 0;
 		var _goalEfficiency = 0;
 		var _reExpansionRate = 0;
-		var _avgHeuristicRate = 0;
+		var _avgHeuristicRate = 0;		// the average hCost of the nodes that A* expanded.
+		var _planGCost = _bestGoalNode.gCost;
+		
+		var _optimalPathNodes = _planLength + 1;
+		var _extraExpandedNodes = nodeData.expanded - _optimalPathNodes
+		
+		var _expansionOverheadRatio = 0;	// for every 1 node on the optimal path, your A* had to expand nearly # nodes
+		
+		/*
+		
+			A ratio closer to 1 (or within a reasonable range) suggests the average heuristic value is a good proportion of the total cost.
+			A very low ratio might suggest an under-informed heuristic (if _planGCost is high).
+			A very high ratio might suggest an overly optimistic or aggressive heuristic
+			(though still admissible, it might mean the hCost values are large compared to the actual path cost increments).
+		
+		*/
+		
+		var _heuristicCostRatio = 0;
 
-		if (_totalNodes > 0) {
+		if (_totalNodes > 0)
+		{
 			_pruneRatio = _truePruned / _totalNodes;
 			_expansionEfficiency = nodeData.expanded / _totalNodes;
 		}
 
-		if (_planLength > 0) {
-			_branchingFactor = nodeData.expanded / _planLength;
+		if (_planLength > 0)
+		{
+			_branchingFactor = nodeData.actionsTried / nodeData.expanded;
 		}
 
 		if (nodeData.expanded > 0)
 		{
 			_goalEfficiency = 1 - ((nodeData.expanded - _planLength) / nodeData.expanded);
 			_reExpansionRate = nodeData.stale / nodeData.expanded;
-			_avgHeuristicRate = nodeData.accumulatedHeuristic / nodeData.expanded;
+			_avgHeuristicRate = nodeData.accumulatedHeuristic / nodeData.expanded; 
+			
+		}
+		
+		if (_planGCost > 0)
+		{
+			_heuristicCostRatio = _avgHeuristicRate / _planGCost;
+		}
+		
+		
+		if (_optimalPathNodes > 0)
+		{
+			_expansionOverheadRatio = _extraExpandedNodes / _optimalPathNodes;
 		}
 		
 		
 		
-		show_debug_message($"Node Data: [Total: {_totalNodes}, Pruned: {_truePruned}, Expanded: {nodeData.expanded}, Stale: {nodeData.stale}, Prune Ratio: {_pruneRatio}]");
-		show_debug_message($"Node Data: [Efficiency: {_expansionEfficiency}, Branching: {_branchingFactor}, Goal Efficiency: {_goalEfficiency}]");
-		show_debug_message($"Node Data: [Re-Expansion Rate: {_reExpansionRate}, Average Heuristic Rate: {_avgHeuristicRate}]");
+		
+		if _showSimpleData
+		{
+			show_debug_message($"Node Data: [Total: {_totalNodes}, Pruned: {_truePruned}, Expanded: {nodeData.expanded}, Stale: {nodeData.stale}, Prune Ratio: {_pruneRatio}]");
+		    show_debug_message($"Node Data: [Efficiency: {_expansionEfficiency}, Branching: {_branchingFactor}, Goal Efficiency: {_goalEfficiency}]");
+		    show_debug_message($"Node Data: [Re-Expansion Rate: {_reExpansionRate}, Average Heuristic Rate: {_avgHeuristicRate}, Plan G-Cost: {_planGCost}]");
+			show_debug_message($"Node Data: [Heuristic Cost Ratio: {_heuristicCostRatio}, Extra Nodes Expanded: {_extraExpandedNodes}, Excess Node Expansion Ratio: {_expansionOverheadRatio}]");
+		}
+		else
+		{
+			// --- Debug Messages (Sentence Format) ---
+		    
+	        show_debug_message("--- GOAP Planner Performance Report ---");
+	        show_debug_message($"Total nodes considered (including pruned and expanded): {_totalNodes}.");
+	        show_debug_message($"Nodes effectively pruned (conditions not met or inferior path): {_truePruned}.");
+	        show_debug_message($"Nodes expanded for search: {nodeData.expanded}.");
+	        show_debug_message($"Nodes that were stale (re-expanded via a better path): {nodeData.stale}.");
+	        show_debug_message($"The prune ratio is {string_format(_pruneRatio, 0, 2)}. (This means {string_format(_pruneRatio * 100, 0, 0)}% of nodes were discarded early).");
+	        show_debug_message($"The search efficiency is {string_format(_expansionEfficiency, 0, 2)}. (Meaning {string_format(_expansionEfficiency * 100, 0, 0)}% of considered nodes were expanded).");
+	        show_debug_message($"The average branching factor (actions considered per expanded node) is {string_format(_branchingFactor, 0, 2)}.");
+	        show_debug_message($"Goal efficiency (how much expanded nodes directly contributed to path) is {string_format(_goalEfficiency, 0, 4)}. (Meaning {string_format(_goalEfficiency * 100, 0, 1)}% of expanded nodes were on the optimal path).");
+	        show_debug_message($"The re-expansion rate is {string_format(_reExpansionRate, 0, 2)}. (This highlights {string_format(_reExpansionRate * 100, 0, 0)}% wasted work due to re-expanding states).");
+	        show_debug_message($"The average heuristic estimate for expanded nodes was {string_format(_avgHeuristicRate, 0, 2)}.");
+	        show_debug_message($"The final plan's total G-Cost is {_planGCost}.");
+	        show_debug_message($"The Heuristic Cost Ratio is {string_format(_heuristicCostRatio, 0, 2)}. (This indicates your heuristic's estimate strength is {string_format(_heuristicCostRatio * 100, 0, 0)}% of the total plan cost).");
+	        show_debug_message($"The number of nodes on the optimal path (including start) is {_optimalPathNodes}.");
+	        show_debug_message($"Extra nodes expanded (not on the optimal path) are: {_extraExpandedNodes}.");
+	        show_debug_message($"The Excess Node Expansion Ratio is {string_format(_expansionOverheadRatio, 0, 2)}. (For every optimal node, {string_format(_expansionOverheadRatio, 0, 2)} extra nodes were expanded).");
+	        show_debug_message("-------------------------------------");
 			
+		}
+		
+		
+		resetNodeData();
 	}
+
+
 
 	#endregion	
 	
@@ -1820,8 +1927,6 @@ function plannerGOAP(_allActions) constructor
 	findPlan = function(_startState, _goalState)
 	{
 		
-		resetNodeData();
-		
 		#region	<Init Vars>
 		
 		var _startMS = current_time;
@@ -1841,17 +1946,13 @@ function plannerGOAP(_allActions) constructor
 		var _bestFSoFar = infinity; // Large initial value
 		var _bestGoalNode = noone;
 		
-		var _expanded = 0;
-		var _pruned = 0;
-		var _staleNodes = 0;
-		var _accumulatedNode = 0;
 		
 		var _finalPlan = [];
 		
 		
 		var _startHash = hashState(_startState);
 		var _goalStateHash = hashState(_goalState);
-		var _startNode = new astarNode(_startState, undefined, undefined, 0, goalHeuristic(_startState, _goalState));
+		var _startNode = new astarNode(_startState, undefined, undefined, 0, calculateHeuristic(_startState, _goalState, _startHash, _goalStateHash));
 		
 		
 		struct_set(_visitedNodes, _startHash, _startNode);
@@ -1861,17 +1962,19 @@ function plannerGOAP(_allActions) constructor
 		
 		#endregion
 		
-		_printEvery = false;
+		var _printEvery = false;
 		
 		show_debug_message($"Goal State: {_goalState}");
 		show_debug_message($"Start State: {_startState}");
+		
 		
 		// A* Pathfinding from _startState -> _goalState
 		while (!ds_priority_empty(_open))
 		{
 			
-			var _node = ds_priority_delete_min(_open);
+			#region		--- Init ---
 			
+			var _node = ds_priority_delete_min(_open);
 			
 			
 			// Early termination: if best goal found and next node's fCost is >= best goal fCost, break
@@ -1882,20 +1985,23 @@ function plannerGOAP(_allActions) constructor
 			var _currentAction = _node.action;
 			var _stateHash = hashState(_currentState);
 			
+			#endregion
+			
 			
 			var _bestOldNode = _visitedNodes[$ _stateHash];
-			if (_bestOldNode != _node)
-			{
-				//show_debug_message("Stale Node");
-				_staleNodes++;
-				continue; // Stale node
-			}
-				    
+			if (_bestOldNode != _node) continue;
+			
 			
 			nodeData.expanded++;
 			
 
-			// dynamic filtering
+			//if !is_undefined(_currentAction) and (_printEvery) show_debug_message($"Trying Action: {_currentAction.name}");
+			
+			#region		--- Dynamic Action Filtering ---
+			
+			
+			var _startFil = current_time;
+			
 			var _unmetGoalKeys = getUnmetConditionsIterative(_goalState, _currentState);
 			var _collectedActs;
 			
@@ -1912,25 +2018,34 @@ function plannerGOAP(_allActions) constructor
 			    struct_set(_relevantActionsCache, _goalPatternKey, _collectedActs);
 			}
 			
-			var _filterResult = filterActionsByNegativeEffects(_collectedActs, _currentState, _unmetGoalKeys, _goalState);
-			_collectedActs = _filterResult.filteredActions; // Get the filtered array
+			_collectedActs = filterActionsByNegativeEffects(_collectedActs, _currentState, _unmetGoalKeys, _goalState);
 			
 			//show_debug_message($"Filtered Actions ({array_length(_collectedActs)}): {_collectedActs}");
 			
 			_collectedActs = sortActionsByScore(_collectedActs, _goalState);
 			
-			nodeData.accumulatedHeuristic += (_node.fCost - _node.gCost - _node.hCost);
+			
+			var _endTimeFil = current_time - _startFil;
+			if (_printEvery) and (_endTimeFil > 0) show_debug_message($"Filter Actions: {_endTimeFil} ms");
+			
+			#endregion
+			
+			nodeData.accumulatedHeuristic += _node.hCost;
 			
 			
-			//show_debug_message("[ Expanding Relevant Actions ]");
+			#region		--- Expand all relavant actions ---
 			
-			// Expand all relavant actions
+			var _startExp = current_time;
+			
+			
 			for (var i = 0; i < array_length(_collectedActs); i++)
 			{
 				var _actName = _collectedActs[i];
 				var _act = allActions[$ _actName];
 				if (_act == undefined) continue;
 
+				nodeData.actionsTried++; // Count every applicable action per node
+				
 				//show_debug_message($"Trying Action: {_actName}");
 				
 				#region			--- Pruning Before Simulating State ---
@@ -1943,43 +2058,39 @@ function plannerGOAP(_allActions) constructor
 					continue;
 				}
 				
+				
+				
 				#endregion
 				
-			
+				
 				var _simState = simulateReactions(_currentState, _act.reactions);
 				//_simState = planLog.doProfile("simulateReactions", simulateReactions, [_currentState, _act.reactions])
 				var _simHash = hashState(_simState);
 				
 				
+				//var _simCacheKey = hashState(_currentState) + "::" + _actName + ":" + string(_act.reactions);
+				//var _simState;
+
+				//if (struct_exists(simulation_cache, _simCacheKey))
+				//{
+				//    _simState = simulation_cache[$ _simCacheKey];
+				//} else {
+				//    _simState = simulateReactions(_currentState, _act.reactions);
+				//    struct_set(simulation_cache, _simCacheKey, _simState);
+				//}
+
+				//var _simHash = hashState(_simState);
+				
 				#region			--- Pruning After Simulating State ---
 				
 				
 				
-				// Check if action already tried on this state
-				if (!struct_exists(_stateActionsMap, _simHash))
-				{
-					var _newActionSet = {};
-					struct_set(_stateActionsMap, _simHash, _newActionSet);
-				}
-				
-				
-				var _actionSet = struct_get(_stateActionsMap, _simHash);
-				if (struct_exists(_actionSet, _actName))
-				{
-					// This action was already tried on this state, prune it
-					if (_printEvery) show_debug_message("This action was already tried on this state");
-					nodeData.pruned++;
-					continue;
-				}
-				
-				
-				var _hAfter = goalHeuristic(_simState, _goalState);
+				var _hAfter = calculateHeuristic(_simState, _goalState, _simHash, _goalStateHash);
 				
 				// Apply heuristic consistency correction
 				var _correctedH = max(_hAfter, _node.hCost - _act.cost);
-				
-				//var _correctedH = _hAfter;
-				
+			
+				// move this below everything so ur not wastefully creating structs for the garbage collectors
 				var _newNode = new astarNode(_simState,_act,_node, (_node.gCost + _act.cost), _correctedH);
 				
 				
@@ -2000,71 +2111,64 @@ function plannerGOAP(_allActions) constructor
 				}
 				
 				
-				#endregion
-				
-				
-				
-				#region			<Create a new node>
-				
-				
+				// --- Move deduplication check here ---
 				var enqueueNode = false;
-
 				if (struct_exists(_visitedNodes, _simHash))
 				{
-				
-					nodeData.stale++;
-					var _existingOldNode = _visitedNodes[$ _simHash];
-
-					if (_existingOldNode.fCost < _newNode.fCost)
+				    var _existingOldNode = _visitedNodes[$ _simHash];
+    
+				    if (_newNode.gCost >= _existingOldNode.gCost)
 					{
-					    nodeData.pruned++;
-					    continue;
-					}
-
-					if (_newNode.gCost >= _existingOldNode.gCost)
-					{
-					    nodeData.pruned++;
-					    continue;
-					}
-
-					enqueueNode = true; // better path
+				        nodeData.pruned++;
+				        continue;
+				    }
+    
+				    // Better path found
+				    nodeData.stale++;
+					
+					// Stale check passed — better path found
+					//show_debug_message("Stale node detected: Better path to same state");
+					
+				    enqueueNode = true;
+				} else {
+				    enqueueNode = true;
 				}
-				else
+
+				if (!enqueueNode) continue;
+
+				// --- Now do action-set tracking (after pruning) ---
+				if (!struct_exists(_stateActionsMap, _simHash))
 				{
-					enqueueNode = true; // new state
+				    struct_set(_stateActionsMap, _simHash, {});
 				}
-
-				if (enqueueNode)
+				
+				var _actionSet = _stateActionsMap[$ _simHash];
+				if (struct_exists(_actionSet, _actName))
 				{
-					struct_set(_visitedNodes, _simHash, _newNode);
-					var priority = _newNode.fCost + (_newNode.hCost * 0.0001);
-					ds_priority_add(_open, _newNode, priority);
+				    nodeData.pruned++;
+				    continue;
 				}
 
-				
-				
+				// Enqueue node only after passing dedup + action check
+				struct_set(_visitedNodes, _simHash, _newNode);
+				var priority = _newNode.fCost + (_newNode.hCost * 0.0001);
+				ds_priority_add(_open, _newNode, priority);
 				struct_set(_actionSet, _actName, true);
-				
-				
+
+				// Goal check
 				if (state_meets_goal(_simState, _goalState))
 				{
-					var _f = _newNode.gCost + _newNode.hCost;
-
-					if (_f < _bestFSoFar)
+				    var _f = _newNode.gCost + _newNode.hCost;
+				    if (_f < _bestFSoFar)
 					{
-					    _bestFSoFar = _f;
-					    _bestGoalNode = _newNode;
-					}
-					
-					// avoid retrying actions on terminal states.
-					struct_set(_actionSet, _actName, true);
-					continue;
+				        _bestFSoFar = _f;
+				        _bestGoalNode = _newNode;
+				    }
 				}
 				
+				
+				
 				#endregion
-				
-				
-				
 				
 				//show_debug_message($"Action Made it: {_actName}");
 				//show_debug_message($"[{current_time-_startMS} ms] Expanding ({_expanded}): g={_newNode.gCost}, h={_newNode.hCost}, f={_newNode.fCost}");
@@ -2072,7 +2176,11 @@ function plannerGOAP(_allActions) constructor
 				
 			}
 			
-			//show_debug_message("[ Finished Expanding Relevant Actions ]");
+			var _endTimeExp = current_time - _startExp;
+			if (_printEvery) and (_endTimeExp > 0) show_debug_message($"Expand Relevant Actions: {_endTimeExp} ms");
+			
+			
+			#endregion
 			
 		}
 		
@@ -2086,8 +2194,14 @@ function plannerGOAP(_allActions) constructor
 			_finalPlan = _pnames;
 			var _pLen = array_length(_finalPlan);
 			
-			reportNodeData(_pLen);
+			// Debugging stuff
+			reportNodeData(_pLen, _bestGoalNode);
+			
 		}
+		
+		
+		
+		
 		
 		return _finalPlan;
 	}
@@ -2118,10 +2232,13 @@ function plannerGOAP(_allActions) constructor
 		
 		
 		//var _subGoalPlan = findPlan(_startState, _subGoalState);
-		var _finalPlan = findPlan(_startState, _goalState);
 		
+		//var _finalPlan = findPlan(_startState, _goalState);
 		
+		//var _subGoalPlan = planLog.doProfile("_subGoalPlan", findPlan, [_startState, _subGoalState]);
 		//show_debug_message($"Sub Goal Plan: {_subGoalPlan}");
+		
+		var _finalPlan = planLog.doProfile("_finalPlan", findPlan, [_startState, _goalState]);
 		//show_debug_message($"Full Goal Plan: {_finalPlan}");
 		
 		
@@ -2129,7 +2246,8 @@ function plannerGOAP(_allActions) constructor
 		return _finalPlan;	//	return a array with names of the actions as strings
 	}
 
-
+	
+	
 }
 
 
