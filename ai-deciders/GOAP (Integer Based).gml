@@ -22,6 +22,7 @@
 
 randomize();
 
+#region		<Global Helpers>
 
 function structToArray(_struct)
 {
@@ -61,6 +62,52 @@ function hashState(_state)
 }
 
 
+function copyStruct(_original) 
+{
+    var copy = {};
+    var keys = struct_get_names(_original);
+    
+    for (var i = 0; i < array_length(keys); i++) 
+    {
+        var key = keys[i];
+        copy[$ key] = _original[$ key];
+    }
+    
+    return copy;
+}
+
+
+function mergeStructs(_target, _source)
+{
+    var keys = struct_get_names(_source);
+    for (var i = 0; i < array_length(keys); i++)
+    {
+        var key = keys[i];
+        _target[$ key] = _source[$ key];
+    }
+}
+
+
+function deepMergeStructs(a, b)
+{
+    var keys = struct_get_names(b);
+    for (var i = 0; i < array_length(keys); i++) {
+        var key = keys[i];
+
+        if (is_struct(a[$ key]) && is_struct(b[$ key]))
+		{
+            // Recursively merge nested structs
+            deepMergeStructs(a[$ key], b[$ key]);
+        } else {
+            // Overwrite or assign simple values
+            a[$ key] = b[$ key];
+        }
+    }
+}
+
+
+#endregion
+
 function brainGOAP() constructor
 {
 	actions = {};
@@ -71,7 +118,7 @@ function brainGOAP() constructor
 	
 	Log = new Logger("GOAP/Brain", true, [LogLevel.debug, LogLevel.warning]);
 	
-	planner = new plannerGOAP(actions); 
+	planner = new plannerGOAP(actions, targetGoal); 
 	plan = [];
 	currentActionIndex = 0;  // init action index
 	
@@ -187,9 +234,19 @@ function brainGOAP() constructor
 	    var _startTime = current_time;
     
 	    var current_state = captureSensorSnapshot();
+		
+		if is_undefined(targetGoal)
+		{
+			Log.logDebug("No valid plan could be generated.");
+			
+		    return false;
+		}
+		
 	    var goal_state = targetGoal.conditions;
 	    var available_actions = actions;
 		
+		show_debug_message($"Generating Plan for ({targetGoal.name})");
+		show_debug_message($"Total Actions in GOAP Brain: ({array_length(struct_get_names(actions))})");
 		
 	    var new_plan = planner.createPlan(current_state, goal_state);
 		
@@ -491,8 +548,7 @@ function brainGOAP() constructor
 }
 
 
-
-function plannerGOAP(_allActions) constructor
+function plannerGOAP(_allActions, _targetGoal) constructor
 {
 	planLog = new Logger("GOAP/Planner", true, [LogLevel.info, LogLevel.warning, LogLevel.profile]);
 	
@@ -507,690 +563,7 @@ function plannerGOAP(_allActions) constructor
 	
 	actionCostData = undefined; // init ONCE
 	
-	
-	#region	--- Helper Functions ---
-
-
-	setupActionData = function()
-	{
-		if (is_undefined(conditionGraph) and is_undefined(reactionGraph))
-		{
-			var _graphs = planLog.doProfile("buildDependencyMaps",buildDependencyMaps);
-			conditionGraph = _graphs.con;
-			reactionGraph = _graphs.react;
-			
-			actionCostData = calculateMinActionCostsHeuristicData();
-		}
-		
-	}
-	
-	
-	
-	checkKeysMatch = function(_conditions_or_reactions, _state_to_check) // Renamed parameters for clarity
-	{
-	    var _keys = struct_get_names(_conditions_or_reactions); // Iterate keys from the conditions/reactions set
-	    for (var i = 0; i < array_length(_keys); i++)
-	    {
-	        var _key = _keys[i];
-	        // Call keyMatches with STATE first, then CONDITIONS/REACTIONS
-	        if (!keyMatches(_state_to_check, _conditions_or_reactions, _key)) 
-	        { 
-	            return false; // If ANY key doesn't match, the whole set doesn't match
-	        }
-	    }
-	    return true; // If all keys matched, the whole set matches
-	}
-
-	
-	
-	keyMatches = function(_state_to_check, _target_struct, _key_to_check)
-	{
-	    // Check if the key exists in the state we are checking against
-	    if (!struct_exists(_state_to_check, _key_to_check))
-	    {
-	        // If the key isn't in the state, the condition isn't met.
-	        // planLog.logDebug($"keyMatches: Key '{_key_to_check}' not found in state."); // Optional debug
-	        return false;
-	    }
-
-	    var state_value = _state_to_check[$ _key_to_check];
-	    var condition_definition = _target_struct[$ _key_to_check]; // Get the condition definition from the target struct (either goal or action conditions)
-
-
-	    // --- Handle Numerical Conditions (Condition definition is a struct with comparison and value) ---
-	    if (is_struct(condition_definition))
-	    {
-	        var operator = condition_definition.comparison;
-	        var target_value = condition_definition.value;
-
-	        // Ensure both state value and target value are numeric for numerical comparison
-	        if (!is_numeric(state_value) || !is_numeric(target_value))
-	        {
-	            // If either isn't numeric, the condition can't be numerically matched.
-	            planLog.logWarning($"keyMatches: Numerical comparison for key '{_key_to_check}' requires numeric values. State is '{string(state_value)}', Target is '{string(target_value)}'.");
-	            return false;
-	        }
-
-	        var result = false; // Initialize the boolean result for the comparison
-
-	        // Perform the numerical comparison based on the operator string
-	        switch (operator)
-	        {
-	            case ">=": result = state_value >= target_value; break;
-	            case "<=": result = state_value <= target_value; break;
-	            case ">":  result = state_value > target_value; break;
-	            case "<":  result = state_value < target_value; break;
-	            case "=":  result = state_value == target_value; break;
-
-	            default:
-	                planLog.logWarning($"keyMatches: Unknown comparison operator '{operator}' for key '{_key_to_check}'.");
-	                return false; // An unknown operator means the condition is not met
-	        }
-			
-			if (!result)
-			{
-				//show_debug_message("keyMatches: Numeric condition failed for key '" + string(_key_to_check) + "'. State: " + string(state_value) + " " + string(operator) + " " + string(target_value));
-			}
-			
-	        return result; // Return the actual boolean result of the numerical comparison
-	    }
-	    // --- Handle Simple Boolean/Value Conditions (Condition definition is a direct value) ---
-	    else
-	    {
-	        var condition_value = condition_definition;
-
-	        // For simple conditions, the state value must exactly match the condition value.
-	        // We already checked if the key exists in the state.
-	        return state_value == condition_value;
-	    }
-	}
-	
-	
-	
-	// Generate a unique cache key for a given start state and goal conditions.
-	// This key is used to store and retrieve plans from the plan_cache.
-	generateCacheKey = function(_startState, _goalConditions)
-	{
-		// Combine the hash of the start state and the hash of the goal conditions.
-		// Ensure goal conditions are also hashed consistently (e.g., sort keys).
-		var start_state_hash = hashState(_startState);
-		var goal_conditions_hash = hashState(_goalConditions); // Assuming goal conditions are a struct
-
-		return start_state_hash + "|" + goal_conditions_hash; // Use a separator that won't appear in hashes
-	}
-	
-	
-	
-	// --- Simulate applying an action's reactions to a state ---
-    simulateReactions = function(_state, _reactions)
-    {
-		//show_debug_message("simulating");
-		
-        var new_state = variable_clone(_state); // Start with a copy of the current state
-        var reaction_keys = struct_get_names(_reactions);
-
-        for (var i = 0; i < array_length(reaction_keys); i++)
-        {
-            var key = reaction_keys[i];
-            var reaction_value = _reactions[$ key];
-
-            // Check if the state variable exists before attempting to modify it
-            // If the reaction is to add a new state variable, add it.
-            if (!struct_exists(new_state, key))
-			{
-                 new_state[$ key] = reaction_value;
-                 planLog.logDebug($"Simulating Reaction: Added new key '{key}' with value '{string(reaction_value)}'");
-                 continue; // Move to the next reaction
-            }
-
-            // --- CORRECTED LOGIC FOR APPLYING REACTIONS ---
-            // Prioritize setting boolean values if the reaction value is a boolean.
-            if (is_bool(reaction_value))
-            {
-                 new_state[$ key] = reaction_value; // Direct assignment for booleans
-                 planLog.logDebug($"Simulating Reaction: Key '{key}' set to boolean '{string(reaction_value)}'.");
-            }
-            // Handle numerical changes (+N, -N) ONLY if the reaction value is numeric AND the state value is numeric
-            else if (is_numeric(reaction_value) && is_numeric(new_state[$ key]))
-            {
-                new_state[$ key] += reaction_value; // Apply the numerical change (add or subtract)
-                planLog.logDebug($"Simulating Reaction: Key '{key}' numerical change by {string(reaction_value)}. New value: {string(new_state[$ key])}");
-            }
-            // For all other cases (strings, or numbers for non-numeric state properties, or direct number assignments),
-            // treat it as a direct SET value.
-            else
-            {
-                 new_state[$ key] = reaction_value; // Direct assignment
-                 planLog.logDebug($"Simulating Reaction: Key '{key}' set to '{string(reaction_value)}'.");
-            }
-
-
-        }
-        return new_state;
-    }
-	
-	
-	simulatePositiveReactions = function(_state, _reactions)
-	{
-	    var new_state = variable_clone(_state); // Start with a copy of the current state
-	    var reaction_keys = struct_get_names(_reactions);
-
-	    for (var i = 0; i < array_length(reaction_keys); i++)
-	    {
-	        var key = reaction_keys[i];
-	        var reaction_value = _reactions[$ key];
-
-	        // --- Logic to define and apply "positive" reactions only ---
-
-	        // 1. Adding a new key (always considered positive if it's being added)
-	        if (!struct_exists(new_state, key))
-	        {
-	            new_state[$ key] = reaction_value;
-	            planLog.logDebug($"Simulating Positive Reaction: Added new key '{key}' with value '{string(reaction_value)}'.");
-	            continue;
-	        }
-
-	        // 2. Boolean values: Only apply if setting to 'true'
-	        if (is_bool(reaction_value))
-	        {
-	            if (reaction_value == true) // Only apply if the reaction is to set to true
-	            {
-	                new_state[$ key] = reaction_value;
-	                planLog.logDebug($"Simulating Positive Reaction: Key '{key}' set to boolean 'true'.");
-	            }
-	            else
-	            {
-	                planLog.logDebug($"Simulating Positive Reaction: Ignored setting key '{key}' to boolean 'false' (not positive).");
-	            }
-	        }
-	        // 3. Numeric values: Only apply if increasing (positive change)
-	        else if (is_numeric(reaction_value) && is_numeric(new_state[$ key]))
-	        {
-	            if (reaction_value > 0) // Only apply if the reaction is a positive numeric change
-	            {
-	                new_state[$ key] += reaction_value;
-	                planLog.logDebug($"Simulating Positive Reaction: Key '{key}' numerical increase by {string(reaction_value)}. New value: {string(new_state[$ key])}.");
-	            }
-	            else
-	            {
-	                planLog.logDebug($"Simulating Positive Reaction: Ignored numerical change for key '{key}' as it's not positive ({string(reaction_value)}).");
-	            }
-	        }
-	        // 4. Other types (e.g., strings): Treat as positive if a new value is being set (or if you have specific positive string changes)
-	        // For simplicity, we'll treat any direct assignment for non-boolean/non-numeric as "positive" if it's changing the value.
-	        // You might refine this further if "positive" has a different meaning for strings.
-	        else
-	        {
-	             // If the value is changing to something new, consider it positive.
-	             // You might need more specific rules here depending on your game's logic.
-	            if (new_state[$ key] != reaction_value)
-				{
-	                new_state[$ key] = reaction_value;
-	                planLog.logDebug($"Simulating Positive Reaction: Key '{key}' set to new value '{string(reaction_value)}'.");
-	            } else {
-	                planLog.logDebug($"Simulating Positive Reaction: Key '{key}' already has value '{string(reaction_value)}', no change applied.");
-	            }
-	        }
-	    }
-	    return new_state;
-	}
-	
-	getPlanActionNames = function(_plan)
-	{
-		var _temp = [];
-		for(var i=0; i<array_length(_plan); i++)
-		{
-			var _act = _plan[i];
-			var _name = _act.name;
-			
-			array_push(_temp, _name);
-		}
-		
-		return _temp;
-	}
-	
-	
-	getPlanCost = function(_plan)
-	{
-		var _total = 0;
-		for(var i=0; i<array_length(_plan); i++)
-		{
-			var _act = _plan[i];
-			var _cost = _act.cost;
-			//var _name = _act.name;
-			
-			_total += _cost;
-		}
-		
-		return _total;
-	}
-	
-
-	array_slice = function(_array, _start, _length)
-	{
-	    var _result = [];
-	    var _end = _start + _length;
-	    var _count = array_length(_array);
-    
-	    // Clamp the end to array bounds
-	    if (_start < 0) _start = 0;
-	    if (_end > _count) _end = _count;
-
-	    for (var i = _start; i < _end; i++)
-		{
-	        array_push(_result, _array[i]);
-	    }
-
-	    return _result;
-	}
-
-	
-	anyKeysMatch = function(_keysA, _keysB)
-	{ 
-		
-		_keysA = struct_get_names(_keysA);
-		_keysB = struct_get_names(_keysB);
-		
-	    for (var i = 0; i < array_length(_keysA); i++)
-		{
-	        var _keyA = _keysA[i];
-	        for (var j = 0; j < array_length(_keysB); j++)
-			{
-	            var _keyB = _keysB[j];
-	            if (_keyA == _keyB)
-				{
-	                return true; // Found a match, no need to check further
-	            }
-	        }
-	    }
-	    return false; // No common keys found after checking all combinations
-	}
-
-	
-	buildActionDependencyGraph = function()
-	{
-	    var _allActs = structToArray(allActions);
-	    var _forwardGraph = {};
-	    var _backwardGraph = {};
-
-	    for (var i = 0; i < array_length(_allActs); i++)
-	    {
-	        var _actA = _allActs[i];
-	        var _forwardList = [];
-
-	        for (var j = 0; j < array_length(_allActs); j++)
-	        {
-	            var _actB = _allActs[j];
-
-	            //if (checkKeysMatch(_actB.conditions, _actA.reactions))
-	            if (anyKeysMatch(_actB.conditions, _actA.reactions))
-	            {
-	                // Forward: A -> B
-	                array_push(_forwardList, _actB.name);
-
-	                // Backward: B <- A
-	                if (!struct_exists(_backwardGraph, _actB.name))
-	                {
-	                    _backwardGraph[$ _actB.name] = [];
-	                }
-	                array_push(_backwardGraph[$ _actB.name], _actA.name);
-	            }
-	        }
-
-	        _forwardGraph[$ _actA.name] = _forwardList;
-
-	        // Ensure all nodes exist in both graphs, even if empty
-	        if (!struct_exists(_backwardGraph, _actA.name))
-	        {
-	            _backwardGraph[$ _actA.name] = [];
-	        }
-	    }
-
-	    return {
-	        forward: _forwardGraph,
-	        backward: _backwardGraph
-	    };
-	}
-
-
-	buildDependencyMaps = function()
-	{
-		var _allActions = structToArray(allActions);
-	    var preMap = {};
-	    var effMap = {};
-
-	    for (var k = 0; k < array_length(_allActions); k++)
-		{
-	        var act = _allActions[k];
-
-	        var condKeys = struct_get_names(act.conditions);
-	        for (var i = 0; i < array_length(condKeys); i++)
-			{
-	            var key = condKeys[i];
-	            if (!struct_exists(preMap, key)) preMap[$ key] = [];
-	            array_push(preMap[$ key], act.name);
-	        }
-
-	        var effectKeys = struct_get_names(act.reactions);
-	        for (var i = 0; i < array_length(effectKeys); i++)
-			{
-	            var key = effectKeys[i];
-	            if (!struct_exists(effMap, key)) effMap[$ key] = [];
-	            array_push(effMap[$ key], act.name);
-	        }
-	    }
-
-	    return {con: preMap, react: effMap};
-	}
-	
-	// Find Actions That Depend On the Current Action
-	getDependentActions = function(currentActionName)
-	{
-	    var action = allActions[$ currentActionName];
-	    if (action == undefined) return [];
-
-	    var dependentActions = [];
-	    var reactKeys = struct_get_names(action.reactions);
-
-	    for (var i = 0; i < array_length(reactKeys); i++)
-	    {
-	        var key = reactKeys[i];
-	        var consumers = reactionGraph[$ key]; // <- actions that consume this key
-	        if (consumers != undefined)
-	        {
-	            for (var j = 0; j < array_length(consumers); j++)
-	            {
-	                var actName = consumers[j];
-	                if (!array_contains(dependentActions, actName))
-					{
-	                    array_push(dependentActions, actName);
-					}
-	            }
-	        }
-	    }
-
-	    return dependentActions;
-	}
-
-	//  Find Actions That Enable the Current Action
-	getEnablingActions = function(currentActionName)
-	{
-	    var action = allActions[$ currentActionName];
-	    if (action == undefined) return [];
-
-	    var enablingActions = [];
-	    var condKeys = struct_get_names(action.conditions);
-
-	    for (var i = 0; i < array_length(condKeys); i++)
-	    {
-	        var key = condKeys[i];
-	        var producingActs = conditionGraph[$ key]; // <- actions that produce this key
-	        if (producingActs != undefined)
-	        {
-	            for (var j = 0; j < array_length(producingActs); j++)
-	            {
-	                var actName = producingActs[j];
-	                if (!array_contains(enablingActions, actName))
-	                    array_push(enablingActions, actName);
-	            }
-	        }
-	    }
-
-	    return enablingActions;
-	}
-
-	
-	
-	// non-explicit + explicit keys
-	getUnmetConditionsIterative = function(_conditions, _state)
-	{
-	    var unmetConditions = {}; // Use a dictionary/object to store unique unmet keys
-	    var visitedKeys = [];
-	    var queue = [];
-
-	    // Initialize the queue with the initial conditions
-	    var initialKeys = struct_get_names(_conditions);
-	    for (var i = 0; i < array_length(initialKeys); i++)
-	    {
-	        var key = initialKeys[i];
-	        if (!keyMatches(_state, _conditions, key))
-	        {
-	            // Only add to queue and unmetConditions if it's genuinely unmet
-	            // and not already visited.
-	            if (!array_contains(visitedKeys, key)) {
-	                array_push(queue, key);
-	                array_push(visitedKeys, key);
-	                unmetConditions[$ key] = true; // Mark as unmet
-	            }
-	        }
-	    }
-
-	    while (array_length(queue) > 0)
-	    {
-	        var currentKey = array_shift(queue); // Dequeue the first item
-
-	        var producingActs = conditionGraph[$ currentKey];
-	        if (producingActs != undefined)
-	        {
-	            for (var j = 0; j < array_length(producingActs); j++)
-	            {
-	                var actName = producingActs[j];
-	                var action = allActions[$ actName];
-	                if (action != undefined && action.conditions != undefined)
-	                {
-	                    var actionConditionsKeys = struct_get_names(action.conditions);
-	                    for (var k = 0; k < array_length(actionConditionsKeys); k++)
-	                    {
-	                        var conditionKey = actionConditionsKeys[k];
-
-	                        // Check if this condition is unmet and not yet visited
-	                        if (!keyMatches(_state, action.conditions, conditionKey))
-	                        {
-	                            if (!array_contains(visitedKeys, conditionKey))
-	                            {
-	                                array_push(queue, conditionKey);
-	                                array_push(visitedKeys, conditionKey);
-	                                unmetConditions[$ conditionKey] = true; // Mark as unmet
-	                            }
-	                        }
-	                    }
-	                }
-	            }
-	        }
-	    }
-
-	    // Convert the unmetConditions object keys into an array
-	    var resultKeys = struct_get_names(unmetConditions);
-	    var out = [];
-
-	    // Filter to ensure only truly unmet conditions from the original state are included
-	    for (var i = 0; i < array_length(resultKeys); i++)
-		{
-	        var key = resultKeys[i];
-	        if (!keyMatches(_state, _conditions, key))
-			{
-	            array_push(out, key);
-	        }
-	    }
-
-	    return out;
-	}
-
-	
-	// explicit keys 
-	getUnmetConditions = function(_conditions, _state)
-	{
-		var unmet = [];
-		var _keys = struct_get_names(_conditions);
-
-		for (var i = 0; i < array_length(_keys); i++)
-		{
-			var _key = _keys[i];
-
-			if (!keyMatches(_state, _conditions, _key))
-			{
-				array_push(unmet, _key);
-			}
-		}
-	
-		return unmet;
-	}
-
-
-	// non-explicit keys
-	getUnmetNonExplicitConditions = function(_goal, _state)
-	{
-	    var allUnmet = {};
-	    var visitedKeys = [];
-	    var queue = [];
-
-	    var explicitKeys = struct_get_names(_goal);
-	    var initialUnmetExplicit = [];
-
-	    // Gather initial unmet explicit keys
-	    for (var i = 0; i < array_length(explicitKeys); i++) {
-	        var key = explicitKeys[i];
-	        if (!keyMatches(_state, _goal, key)) {
-	            array_push(initialUnmetExplicit, key);
-	            array_push(queue, key);
-	            array_push(visitedKeys, key);
-	            allUnmet[$ key] = true;
-	        }
-	    }
-
-	    // BFS through condition graph
-	    while (array_length(queue) > 0) {
-	        var currentKey = array_shift(queue);
-	        var producers = conditionGraph[$ currentKey];
-	        if (producers == undefined) continue;
-
-	        for (var j = 0; j < array_length(producers); j++) {
-	            var actName = producers[j];
-	            var action = allActions[$ actName];
-	            if (action == undefined || action.conditions == undefined) continue;
-
-	            var preKeys = struct_get_names(action.conditions);
-	            for (var k = 0; k < array_length(preKeys); k++) {
-	                var preKey = preKeys[k];
-
-	                if (!keyMatches(_state, action.conditions, preKey)) {
-	                    if (!array_contains(visitedKeys, preKey)) {
-	                        array_push(queue, preKey);
-	                        array_push(visitedKeys, preKey);
-	                    }
-	                    allUnmet[$ preKey] = true;
-	                }
-	            }
-	        }
-	    }
-
-	    // Remove initial unmet explicit keys from allUnmet keys
-	    var allUnmetKeys = struct_get_names(allUnmet);
-	    var nonExplicitUnmet = [];
-
-	    for (var i = 0; i < array_length(allUnmetKeys); i++)
-		{
-	        var key = allUnmetKeys[i];
-	        if (!array_contains(initialUnmetExplicit, key))
-			{
-	            array_push(nonExplicitUnmet, key);
-	        }
-	    }
-
-	    return nonExplicitUnmet;
-	}
-
-	
-	
-	trimActionsToUnmet = function(relevantActions, unmetKeys)
-	{
-		var actionSet = {};
-	
-		// For each unmet condition key, look up actions that can produce it
-		for (var i = 0; i < array_length(unmetKeys); i++)
-		{
-			var key = unmetKeys[i];
-		
-			if (reactionGraph[$ key] != undefined)
-			{
-				var producers = reactionGraph[$ key];
-			
-				for (var j = 0; j < array_length(producers); j++)
-				{
-					var act = producers[j];
-					struct_set(actionSet, act, act);
-				}
-			}
-		}
-	
-		// Only include relevant actions that appear in the producer set
-		var trimmed = [];
-		for (var i = 0; i < array_length(relevantActions); i++)
-		{
-			var actName = relevantActions[i];
-			if (struct_exists(actionSet, actName))
-			{
-				array_push(trimmed, actName);
-			}
-		}
-		
-		//show_debug_message($"Trimmed to {array_length(trimmed)} <- from: {array_length(relevantActions)}, Relevant actions: {trimmed}");
-		return trimmed;
-	}
-
-
-
-	state_meets_goal = function(sim_state, goal_state)
-	{
-	    var _goal_keys = struct_get_names(goal_state);
-	    for (var i = 0; i < array_length(_goal_keys); i++)
-		{
-	        var _key = _goal_keys[i];
-	        if (!keyMatches(sim_state, goal_state, _key))
-			{
-	            return false; // Early exit if any condition fails
-	        }
-	    }
-	    return true; // All conditions passed
-	}
-
-
-	// Eats up Time during planning(ms)
-	ancestorHasState = function(node, new_state)
-	{
-	    var new_key = hashState(new_state);
-		//show_debug_message("----------------------------------");
-	    while (node != undefined && node != noone)
-	    {
-	        var node_key = hashState(node.state);
-			
-			//show_debug_message($"New Key: {new_key}");
-			//show_debug_message($"Node Key: {node_key}");
-			
-	        if (node_key == new_key)
-	        {
-	            return true;
-	        }
-	        node = node.parent;
-	    }
-
-	    return false;
-	}
-	
-	
-	
-	// Reconstructs the plan from the goal node by walking back through parents
-	reconstructPlan = function(_node)
-	{
-		var plan = [];
-		while (_node.parent != undefined)
-		{
-			array_insert(plan, 0, _node.action); // insert action at beginning
-			_node = _node.parent;
-		}
-		return plan;
-	}
-
+	targetGoal = _targetGoal;
 	
 	
 	getAverageActionCost = function()
@@ -1212,11 +585,217 @@ function plannerGOAP(_allActions) constructor
 
 	    return _avg;
 	}
+	
+	averageActionCost = getAverageActionCost();
+	
+	
+	#region	--- All Helper Functions ---
 
 
+	setupActionData = function()
+	{
+		if (is_undefined(conditionGraph) and is_undefined(reactionGraph))
+		{
+			//var _graphs = planLog.doProfile("buildDependencyMaps",buildDependencyMaps);
+			var _graphs = buildDependencyMaps();
+			conditionGraph = _graphs.con;
+			reactionGraph = _graphs.react;
+			
+			//show_debug_message($"Condition Graph: {conditionGraph}");
+			//show_debug_message($"Reaction Graph: {reactionGraph}");
+			
+			actionCostData = calculateMinActionCostsHeuristicData();
+		}
+		
+	}
+	
+	
+	#region		--- Heuristic Functions ---
+	
+	function buildRelaxedPlanningGraph(_startState, _goalState)
+	{
+	    var knownFacts = {};
+	    var newFacts = [];
 
+	    // initialize knownFacts with start state facts, cost = 0
+	    var startKeys = struct_get_names(_startState);
+	    for (var i = 0; i < array_length(startKeys); i++)
+		{
+	        var k = startKeys[i];
+			
+			var val = _startState[$ k];
+
+			if (val != 0)
+			{
+			    struct_set(knownFacts, k, 0);
+			    array_push(newFacts, k);
+			}
+			
+	        //struct_set(knownFacts, k, 0);
+	        //array_push(newFacts, k);
+	    }
+
+		show_debug_message($"Start State: {_startState}");
+
+	    var iteration = 0;
+	    var maxIterations = 1000;
+
+	    while (array_length(newFacts) > 0 && iteration < maxIterations)
+	    {
+	        iteration++;
+	        var nextNewFacts = [];
+
+	        var actionNames = struct_get_names(allActions);
+	        for (var a = 0; a < array_length(actionNames); a++) {
+	            var actName = actionNames[a];
+	            var action = allActions[$ actName];
+
+	            if (areAllConditionsMet(action.conditions, knownFacts))
+	            {
+	                var addKeys = getPositiveReactionsFromAction(action);
+
+	                for (var j = 0; j < array_length(addKeys); j++)
+	                {
+	                    var key = addKeys[j];
+	                    var oldCost = struct_exists(knownFacts, key) ? knownFacts[$ key] : 999999;
+
+	                    var newCost = iteration + action.cost;
+						show_debug_message($"New Cost: {newCost}");
+	                   
+						
+						if (newCost < oldCost)
+						{
+						    struct_set(knownFacts, key, newCost);
+						    array_push(nextNewFacts, key);
+						    show_debug_message("Added/Updated fact: " + string(key) + " cost: " + string(newCost));
+						}
+	                }
+	            }
+	        }
+
+	        newFacts = nextNewFacts;
+
+	        // Optional early stop if all goal keys are met here if you want
+			break;
+	    }
+
+	    return knownFacts;
+	}
+
+
+	function computeHeuristicFromRPG(knownFacts, _goalState, heuristicType="")
+	{
+	    var goalKeys = struct_get_names(_goalState);
+
+	    var hMax = 0;
+	    var hSum = 0;
+	    for (var g = 0; g < array_length(goalKeys); g++) {
+	        var goalKey = goalKeys[g];
+	        var cost = struct_exists(knownFacts, goalKey) ? knownFacts[$ goalKey] : 999999;
+	        hSum += cost;
+	        if (cost > hMax) hMax = cost;
+	    }
+
+	    if (heuristicType == "max") return hMax;
+	    else if (heuristicType == "sum") return hSum;
+	    else return hMax; // default
+	}
+	
+	
+	function goalHeuristic(_currentState, _goalState, _unmet)
+	{
+		var _startMS = current_time;
+		
+	    var _totalHeuristicCost = 0;
+	    var _unmetConditions = _unmet;
+		
+		
+		var _minCostPerKey = actionCostData.MinCostPerKey;
+		var _minCostToAchieve = actionCostData.MinCostToAchieve;
+
+	    var _avg_cost = averageActionCost; // Still a useful fallback
+
+	    for (var i = 0; i < array_length(_unmetConditions); i++)
+	    {
+	        var _key = _unmetConditions[i];
+
+        
+	        var _goalDefinition = _goalState[$ _key]; 
+
+	        // --- NEW/UPDATED LOGIC: Handle missing keys using calculated heuristic data ---
+	        if (!struct_exists(_currentState, _key))
+	        {
+	            var cost_for_missing_key = _avg_cost; // Default fallback if no specific data is found
+
+	            if (is_struct(_goalDefinition)) // It's a numerical comparison goal (e.g., {comparison:">=", value:10})
+	            {
+	                // Estimate the cost to get to the required amount from zero, using cost_per_unit
+	                var needed_amount = _goalDefinition.value;
+                
+	                // Use global.GOAP_MinCostPerUnit_Data if available, otherwise fallback to average
+	                var cost_per_unit = struct_exists(_minCostPerKey, _key) ? _minCostPerKey[$ _key] : _avg_cost;
+                
+	                cost_for_missing_key = needed_amount * cost_per_unit;
+	                if (cost_for_missing_key <= 0) cost_for_missing_key = _avg_cost; // Ensure minimum if goal value is 0 or less
+	            }
+	            else // It's a simple boolean/value goal (e.g., true, "item_name", or 0/1)
+	            {
+	                var target_value_str = string(_goalDefinition);
+                
+	                // Use global.GOAP_MinCostToAchieve_Data for direct lookup
+	                if (struct_exists(_minCostToAchieve, _key) && struct_exists(_minCostToAchieve[$ _key], target_value_str))
+	                {
+	                    cost_for_missing_key = _minCostToAchieve[$ _key][target_value_str];
+	                }
+	            }
+            
+	            _totalHeuristicCost += cost_for_missing_key;
+	            continue; // Move to the next unmet condition
+	        }
+
+	        // --- Existing logic for keys that exist but don't meet the goal ---
+	        var _currentValue = _currentState[$ _key];
+
+	        // Now, use the getConditionGap function, which will also be updated to use the new data
+	        // We'll pass the global heuristic data to getConditionGap
+	        var _val = getConditionGap(_currentValue, _goalDefinition, _key);
+	        _totalHeuristicCost += _val;
+	    }
+
+
+		//show_debug_message($"Goal Heuristic MS: {current_time - _startMS}");
+
+	    return _totalHeuristicCost;
+	}
+	
+	
+	function calculateHeuristic (_currentState, _goalState, _stateHash, _goalStateHash, _unmet)
+	{
+		var _key = _stateHash + "|" + _goalStateHash;
+		
+		//show_debug_message($"heuristic_cache size: {array_length(struct_get_names(heuristic_cache))}");
+
+		
+		if (struct_exists(heuristic_cache, _key))
+		{
+			var _data = struct_get(heuristic_cache, _key);
+			
+			//show_debug_message("Heuristic cache hit.");
+			
+			return _data;
+		}
+		
+		//show_debug_message($"Heuristic cache NOT hit");
+		
+		var _h = goalHeuristic(_currentState, _goalState, _unmet);
+	    struct_set(heuristic_cache, _key, _h);
+		
+	    return _h;
+	}
+	
+	
 	/// @description Calculates and stores the minimum cost per unit for numerical keys and minimum cost to achieve specific states for direct keys, using the reactionGraph.
-	calculateMinActionCostsHeuristicData = function()
+	function calculateMinActionCostsHeuristicData()
 	{
 	    var MinCostPerKey = {};      // Stores { "key_name": min_cost_per_key_value, ... }
 	    var MinCostToAchieve = {};   // Stores { "key_name": { "target_value_string": min_cost, ... }, ... }
@@ -1279,22 +858,20 @@ function plannerGOAP(_allActions) constructor
 		
 
 	    // Optional: Log the results for debugging
-	    show_debug_message("Calculated Min Heuristic Costs:");
-	    show_debug_message(" ~ MinCostPerKey: " + string(MinCostPerKey));
-	    show_debug_message(" ~ MinCostToAchieve: " + string(MinCostToAchieve));
+	    //show_debug_message("Calculated Min Heuristic Costs:");
+	    //show_debug_message(" ~ MinCostPerKey: " + string(MinCostPerKey));
+	    //show_debug_message(" ~ MinCostToAchieve: " + string(MinCostToAchieve));
 		
 		return {
 			MinCostPerKey: MinCostPerKey,
 			MinCostToAchieve: MinCostToAchieve,
 		}
 	}
+
 	
-	
-	
-	
-	getConditionGap = function(_state_value, _target_condition_value, _key_name = "unknown_key")
+	function getConditionGap(_state_value, _target_condition_value, _key_name = "unknown_key")
 	{
-	    var _avg_cost = getAverageActionCost(); // Still a useful fallback
+	    var _avg_cost = averageActionCost; // Still a useful fallback
 		var _minCostPerKey = actionCostData.MinCostPerKey;
 		var _minCostToAchieve = actionCostData.MinCostToAchieve;
 		
@@ -1379,7 +956,600 @@ function plannerGOAP(_allActions) constructor
 	}
 	
 	
-	collectRelevantActions = function(_conditionsToMeet)
+	#endregion
+	
+	
+	#region		--- Other Helper ---
+	
+	// Helper: checks if all conditions keys exist in knownFacts (ignoring values)
+	function areAllConditionsMet(conditions, knownFacts)
+	{
+	    var keys = struct_get_names(conditions);
+	    for (var i = 0; i < array_length(keys); i++)
+		{
+	        var k = keys[i];
+	        if (!struct_exists(knownFacts, k)) return false;
+	    }
+	    return true;
+	}
+
+
+	
+	function checkKeysMatch(_conditions_or_reactions, _state_to_check) // Renamed parameters for clarity
+	{
+	    var _keys = struct_get_names(_conditions_or_reactions); // Iterate keys from the conditions/reactions set
+	    for (var i = 0; i < array_length(_keys); i++)
+	    {
+	        var _key = _keys[i];
+	        // Call keyMatches with STATE first, then CONDITIONS/REACTIONS
+	        if (!keyMatches(_state_to_check, _conditions_or_reactions, _key)) 
+	        { 
+	            return false; // If ANY key doesn't match, the whole set doesn't match
+	        }
+	    }
+	    return true; // If all keys matched, the whole set matches
+	}
+
+	
+	
+	function keyMatches(_state_to_check, _target_struct, _key_to_check)
+	{
+	    // Check if the key exists in the state we are checking against
+	    if (!struct_exists(_state_to_check, _key_to_check))
+	    {
+	        // If the key isn't in the state, the condition isn't met.
+	        // planLog.logDebug($"keyMatches: Key '{_key_to_check}' not found in state."); // Optional debug
+	        return false;
+	    }
+
+	    var state_value = _state_to_check[$ _key_to_check];
+	    var condition_definition = _target_struct[$ _key_to_check]; // Get the condition definition from the target struct (either goal or action conditions)
+
+
+	    // --- Handle Numerical Conditions (Condition definition is a struct with comparison and value) ---
+	    if (is_struct(condition_definition))
+	    {
+	        var operator = condition_definition.comparison;
+	        var target_value = condition_definition.value;
+
+	        // Ensure both state value and target value are numeric for numerical comparison
+	        if (!is_numeric(state_value) || !is_numeric(target_value))
+	        {
+	            // If either isn't numeric, the condition can't be numerically matched.
+	            planLog.logWarning($"keyMatches: Numerical comparison for key '{_key_to_check}' requires numeric values. State is '{string(state_value)}', Target is '{string(target_value)}'.");
+	            return false;
+	        }
+
+	        var result = false; // Initialize the boolean result for the comparison
+
+	        // Perform the numerical comparison based on the operator string
+	        switch (operator)
+	        {
+	            case ">=": result = state_value >= target_value; break;
+	            case "<=": result = state_value <= target_value; break;
+	            case ">":  result = state_value > target_value; break;
+	            case "<":  result = state_value < target_value; break;
+	            case "=":  result = state_value == target_value; break;
+
+	            default:
+	                planLog.logWarning($"keyMatches: Unknown comparison operator '{operator}' for key '{_key_to_check}'.");
+	                return false; // An unknown operator means the condition is not met
+	        }
+			
+			if (!result)
+			{
+				//show_debug_message("keyMatches: Numeric condition failed for key '" + string(_key_to_check) + "'. State: " + string(state_value) + " " + string(operator) + " " + string(target_value));
+			}
+			
+	        return result; // Return the actual boolean result of the numerical comparison
+	    }
+	    // --- Handle Simple Boolean/Value Conditions (Condition definition is a direct value) ---
+	    else
+	    {
+	        var condition_value = condition_definition;
+
+	        // For simple conditions, the state value must exactly match the condition value.
+	        // We already checked if the key exists in the state.
+	        return state_value == condition_value;
+	    }
+	}
+	
+	
+	function keyMatchesValue(actual, expected)
+	{
+	    // If expected is a struct, interpret it as a comparison requirement
+	    if (is_struct(expected))
+		{
+	        if (!struct_exists(expected, "comparison") || !struct_exists(expected, "value")) return false;
+
+	        var comp = expected.comparison;
+	        var val = expected.value;
+
+	        switch (comp) {
+	            case "==": return actual == val;
+	            case "<":  return actual < val;
+	            case "<=": return actual <= val;
+	            case ">":  return actual > val;
+	            case ">=": return actual >= val;
+	            default: return false;
+	        }
+	    }
+
+	    // Otherwise, just compare directly
+	    return actual == expected;
+	}
+
+	
+	getPlanActionNames = function(_plan)
+	{
+		var _temp = [];
+		for(var i=0; i<array_length(_plan); i++)
+		{
+			var _act = _plan[i];
+			var _name = _act.name;
+			
+			array_push(_temp, _name);
+		}
+		
+		return _temp;
+	}
+	
+	
+	getPlanCost = function(_plan)
+	{
+		var _total = 0;
+		for(var i=0; i<array_length(_plan); i++)
+		{
+			var _act = _plan[i];
+			var _cost = _act.cost;
+			//var _name = _act.name;
+			
+			_total += _cost;
+		}
+		
+		return _total;
+	}
+	
+
+	array_slice = function(_array, _start, _length)
+	{
+	    var _result = [];
+	    var _end = _start + _length;
+	    var _count = array_length(_array);
+    
+	    // Clamp the end to array bounds
+	    if (_start < 0) _start = 0;
+	    if (_end > _count) _end = _count;
+
+	    for (var i = _start; i < _end; i++)
+		{
+	        array_push(_result, _array[i]);
+	    }
+
+	    return _result;
+	}
+
+	
+	function anyKeysMatch(_keysA, _keysB)
+	{ 
+		
+		_keysA = struct_get_names(_keysA);
+		_keysB = struct_get_names(_keysB);
+		
+	    for (var i = 0; i < array_length(_keysA); i++)
+		{
+	        var _keyA = _keysA[i];
+	        for (var j = 0; j < array_length(_keysB); j++)
+			{
+	            var _keyB = _keysB[j];
+	            if (_keyA == _keyB)
+				{
+	                return true; // Found a match, no need to check further
+	            }
+	        }
+	    }
+	    return false; // No common keys found after checking all combinations
+	}
+
+
+	
+	// Find Actions That Depend On the Current Action
+	getDependentActions = function(currentActionName)
+	{
+	    var action = allActions[$ currentActionName];
+	    if (action == undefined) return [];
+
+	    var dependentActions = [];
+	    var reactKeys = struct_get_names(action.reactions);
+
+	    for (var i = 0; i < array_length(reactKeys); i++)
+	    {
+	        var key = reactKeys[i];
+	        var consumers = reactionGraph[$ key]; // <- actions that consume this key
+	        if (consumers != undefined)
+	        {
+	            for (var j = 0; j < array_length(consumers); j++)
+	            {
+	                var actName = consumers[j];
+	                if (!array_contains(dependentActions, actName))
+					{
+	                    array_push(dependentActions, actName);
+					}
+	            }
+	        }
+	    }
+
+	    return dependentActions;
+	}
+
+	//  Find Actions That Enable the Current Action
+	getEnablingActions = function(currentActionName)
+	{
+	    var action = allActions[$ currentActionName];
+	    if (action == undefined) return [];
+
+	    var enablingActions = [];
+	    var condKeys = struct_get_names(action.conditions);
+
+	    for (var i = 0; i < array_length(condKeys); i++)
+	    {
+	        var key = condKeys[i];
+	        var producingActs = conditionGraph[$ key]; // <- actions that produce this key
+	        if (producingActs != undefined)
+	        {
+	            for (var j = 0; j < array_length(producingActs); j++)
+	            {
+	                var actName = producingActs[j];
+	                if (!array_contains(enablingActions, actName))
+	                    array_push(enablingActions, actName);
+	            }
+	        }
+	    }
+
+	    return enablingActions;
+	}
+
+	
+	function getBackwardReachableConditions(_goalState)
+	{
+	    var reachable = {};
+	    var queue = [];
+
+	    var goalKeys = struct_get_names(_goalState);
+	    for (var i = 0; i < array_length(goalKeys); i++) {
+	        var key = goalKeys[i];
+	        reachable[$ key] = true;
+	        array_push(queue, key);
+	    }
+
+	    while (array_length(queue) > 0) {
+	        var key = array_shift(queue);
+	        var producers = conditionGraph[$ key];
+	        if (producers == undefined) continue;
+
+	        for (var i = 0; i < array_length(producers); i++) {
+	            var actionName = producers[i];
+	            var action = allActions[$ actionName];
+	            if (action == undefined || action.conditions == undefined) continue;
+
+	            var condKeys = struct_get_names(action.conditions);
+	            for (var j = 0; j < array_length(condKeys); j++) {
+	                var condKey = condKeys[j];
+	                if (!struct_exists(reachable, condKey)) {
+	                    reachable[$ condKey] = true;
+	                    array_push(queue, condKey);
+	                }
+	            }
+	        }
+	    }
+
+	    return reachable;
+	}
+
+	
+	function getForwardReachableConditions(_state)
+	{
+	    var reachable = {};
+	    var queue = [];
+
+	    var stateKeys = struct_get_names(_state);
+	    for (var i = 0; i < array_length(stateKeys); i++) {
+	        var key = stateKeys[i];
+	        reachable[$ key] = true;
+	        array_push(queue, key);
+	    }
+
+	    while (array_length(queue) > 0) {
+	        var key = array_shift(queue);
+	        var reactions = reactionGraph[$ key];
+	        if (reactions == undefined) continue;
+
+	        for (var i = 0; i < array_length(reactions); i++) {
+	            var actName = reactions[i];
+	            var action = allActions[$ actName];
+	            if (action == undefined || action.reactions == undefined) continue;
+
+	            var effectKeys = struct_get_names(action.reactions);
+	            for (var j = 0; j < array_length(effectKeys); j++) {
+	                var effKey = effectKeys[j];
+	                if (!struct_exists(reachable, effKey)) {
+	                    reachable[$ effKey] = true;
+	                    array_push(queue, effKey);
+	                }
+	            }
+	        }
+	    }
+
+	    return reachable;
+	}
+
+	
+	generateCacheKey = function(_startState, _goalConditions)
+	{
+		var start_state_hash = hashState(_startState);
+		var goal_conditions_hash = hashState(_goalConditions); 
+
+		return start_state_hash + "|" + goal_conditions_hash;
+	}
+	
+	
+	#endregion
+	
+	
+	#region		--- Graphs ---
+	
+	
+	buildActionDependencyGraph = function()
+	{
+	    var _allActs = structToArray(allActions);
+	    var _forwardGraph = {};
+	    var _backwardGraph = {};
+
+	    for (var i = 0; i < array_length(_allActs); i++)
+	    {
+	        var _actA = _allActs[i];
+	        var _forwardList = [];
+
+	        for (var j = 0; j < array_length(_allActs); j++)
+	        {
+	            var _actB = _allActs[j];
+
+	            if (anyKeysMatch(_actB.conditions, _actA.reactions))
+	            {
+	                // Forward: A -> B
+	                array_push(_forwardList, _actB.name);
+
+	                // Backward: B <- A
+	                if (!struct_exists(_backwardGraph, _actB.name))
+	                {
+	                    _backwardGraph[$ _actB.name] = [];
+	                }
+	                array_push(_backwardGraph[$ _actB.name], _actA.name);
+	            }
+	        }
+
+	        _forwardGraph[$ _actA.name] = _forwardList;
+
+	        // Ensure all nodes exist in both graphs, even if empty
+	        if (!struct_exists(_backwardGraph, _actA.name))
+	        {
+	            _backwardGraph[$ _actA.name] = [];
+	        }
+	    }
+
+	    return {
+	        forward: _forwardGraph,
+	        backward: _backwardGraph
+	    };
+	}
+
+
+	buildDependencyMaps = function()
+	{
+		var _allActions = structToArray(allActions);
+	    var preMap = {};
+	    var effMap = {};
+
+	    for (var k = 0; k < array_length(_allActions); k++)
+		{
+	        var act = _allActions[k];
+
+	        var condKeys = struct_get_names(act.conditions);
+	        for (var i = 0; i < array_length(condKeys); i++)
+			{
+	            var key = condKeys[i];
+	            if (!struct_exists(preMap, key)) preMap[$ key] = [];
+	            array_push(preMap[$ key], act.name);
+	        }
+
+	        var effectKeys = struct_get_names(act.reactions);
+	        for (var i = 0; i < array_length(effectKeys); i++)
+			{
+	            var key = effectKeys[i];
+	            if (!struct_exists(effMap, key)) effMap[$ key] = [];
+	            array_push(effMap[$ key], act.name);
+	        }
+	    }
+
+	    return {con: preMap, react: effMap};
+	}
+	
+	
+	
+	
+	function buildConditionDepthGraph(goalState)
+	{
+	    var visited = {};
+	    var depthGraph = []; // array of arrays: depthGraph[depth] = [condition keys]
+	    var queue = [];
+
+	    // Seed with explicit goal condition keys
+	    var goalKeys = struct_get_names(goalState);
+	    for (var i = 0; i < array_length(goalKeys); i++) {
+	        var key = goalKeys[i];
+	        visited[$ key] = 0;
+	        array_push(queue, [key, 0]);
+	    }
+
+	    while (array_length(queue) > 0) {
+	        var pair = array_shift(queue);
+	        var key = pair[0];
+	        var _depth = pair[1];
+
+	        depthGraph[_depth] = [];
+	        if (!array_contains(depthGraph[_depth], key)) array_push(depthGraph[_depth], key);
+
+	        var producers = conditionGraph[$ key];
+	        if (producers == undefined) continue;
+
+	        for (var j = 0; j < array_length(producers); j++) {
+	            var actName = producers[j];
+	            var action = allActions[$ actName];
+	            if (action == undefined || action.conditions == undefined) continue;
+
+	            var condKeys = struct_get_names(action.conditions);
+	            for (var k = 0; k < array_length(condKeys); k++) {
+	                var condKey = condKeys[k];
+
+	                // Only enqueue if not already visited or found at a deeper depth
+	                if (!struct_exists(visited, condKey) || visited[$ condKey] > _depth + 1) {
+	                    visited[$ condKey] = _depth + 1;
+	                    array_push(queue, [condKey, _depth + 1]);
+	                }
+	            }
+	        }
+	    }
+
+	    return depthGraph;
+	}
+
+	
+	#endregion
+	
+	
+	#region		--- GET KEYS ---
+	
+	// non-explicit + explicit keys
+	function getAllUnmetConditions(_goalState, _currentState)
+	{
+		
+	    // First get explicit unmet conditions
+	    var explicitUnmet = getUnmetConditions(_goalState, _currentState);
+    
+	    // Then get non-explicit ones building from those
+	    var nonExplicitUnmet = getUnmetNonExplicitConditions(_goalState, _currentState);
+		
+		var _allKeys = array_concat(explicitUnmet, nonExplicitUnmet);
+		
+	    // Combine results
+	    return _allKeys;
+	}
+	
+
+	// explicit keys 
+	function getUnmetConditions(_conditions, _state)
+	{
+		var unmet = [];
+		var _keys = struct_get_names(_conditions);
+
+		for (var i = 0; i < array_length(_keys); i++)
+		{
+			var _key = _keys[i];
+
+			if (!keyMatches(_state, _conditions, _key))
+			{
+				array_push(unmet, _key);
+			}
+		}
+	
+		return unmet;
+	}
+
+
+	// non-explicit keys
+	function getUnmetNonExplicitConditions(_goal, _state) 
+	{
+	    var explicitKeys = struct_get_names(_goal);
+	    var explicitKeyLookup = {};  // O(1) lookup for explicit keys
+	    var visited = {};
+	    var queue = [];
+	    var result = [];  // Build result directly instead of using intermediate struct
+    
+	    // Create lookup table for explicit keys (avoids array_contains later)
+	    for (var i = 0; i < array_length(explicitKeys); i++) 
+	    {
+	        explicitKeyLookup[$ explicitKeys[i]] = true;
+	    }
+    
+	    // Seed queue with unmet explicit conditions
+	    for (var i = 0; i < array_length(explicitKeys); i++) 
+	    {
+	        var key = explicitKeys[i];
+	        if (!keyMatches(_state, _goal, key)) 
+	        {
+	            visited[$ key] = true;
+	            array_push(queue, key);
+	        }
+	    }
+    
+	    // BFS through condition graph
+	    var queueIndex = 0;  // Use index instead of array_shift for better performance
+	    while (queueIndex < array_length(queue)) 
+	    {
+	        var currentKey = queue[queueIndex++];
+        
+	        // Check if producers exist for this key
+	        if (!struct_exists(conditionGraph, currentKey)) continue;
+        
+	        var producers = conditionGraph[$ currentKey];
+	        for (var j = 0; j < array_length(producers); j++) 
+	        {
+	            var actionKey = producers[j];
+            
+	            // Check if action exists
+	            if (!struct_exists(allActions, actionKey)) continue;
+            
+	            var action = allActions[$ actionKey];
+            
+	            // Skip if no conditions
+	            if (!struct_exists(action, "conditions")) continue;
+            
+	            var preKeys = struct_get_names(action.conditions);
+	            for (var k = 0; k < array_length(preKeys); k++) 
+	            {
+	                var preKey = preKeys[k];
+                
+	                // Skip if already visited
+	                if (struct_exists(visited, preKey)) continue;
+                
+	                // Only process if condition is unmet
+	                if (!keyMatches(_state, action.conditions, preKey)) 
+	                {
+	                    visited[$ preKey] = true;
+	                    array_push(queue, preKey);
+                    
+	                    // Add directly to result if not explicit (avoid second pass)
+	                    if (!struct_exists(explicitKeyLookup, preKey)) 
+	                    {
+	                        array_push(result, preKey);
+	                    }
+	                }
+	            }
+	        }
+	    }
+    
+	    return result;
+	}
+	
+	
+	#endregion
+	
+	
+	#region		--- Filter Actions ---
+
+	
+	
+	function collectRelevantActions(_conditionsToMeet)
 	{
 	    // Use a struct to track all unique actions encountered during the traversal.
 	    // The keys of this struct will be the unique action names.
@@ -1441,7 +1611,7 @@ function plannerGOAP(_allActions) constructor
 	}
 
 
-	filterActionsByNegativeEffects = function(_actions, _currentState, _unmetGoalKeys, _goalState)
+	function filterActionsByNegativeEffects(_actions, _currentState, _unmetGoalKeys, _goalState)
 	{
 	    var _filteredActions = [];
 
@@ -1449,145 +1619,122 @@ function plannerGOAP(_allActions) constructor
 	    {
 	        var _actName = _actions[i];
 	        var _act = allActions[$ _actName];
-	        if (_act == undefined) continue;
+	        if (_act == undefined || _act.reactions == undefined) continue;
 
+	        var _actReactions = _act.reactions;
 	        var _hasUndesirableEffect = false;
-        
+
+	        // Loop through only keys this action affects that are also unmet
 	        for (var j = 0; j < array_length(_unmetGoalKeys); j++)
 	        {
 	            var _unmetKey = _unmetGoalKeys[j];
-            
-	            if (!struct_exists(_act.reactions, _unmetKey)) continue;
 
-	            var _reactionValue = _act.reactions[$ _unmetKey];
-	            var _currentValue = _currentState[$ _unmetKey];
-            
-	            var _goalDefinition = undefined;
-	            if (struct_exists(_goalState, _unmetKey)) {
-	                _goalDefinition = _goalState[$ _unmetKey];
-	            } else {
-	                continue; 
-	            }
+	            // Quick skip if this action does not affect the key
+	            if (!struct_exists(_actReactions, _unmetKey)) continue;
 
-	            // Numerical Goals (e.g., Ammo: {comparison: ">=", value: 10})
-	            if (is_struct(_goalDefinition) && struct_exists(_goalDefinition, "comparison") && is_numeric(_reactionValue))
+	            var _reactionValue = _actReactions[$ _unmetKey];
+
+	            // Avoid full struct lookup if key doesn't exist in goal
+	            if (!struct_exists(_goalState, _unmetKey)) continue;
+
+	            var _goalDefinition = _goalState[$ _unmetKey];
+
+	            // Numerical goal
+	            if (is_struct(_goalDefinition) && is_numeric(_reactionValue))
 	            {
 	                var _operator = _goalDefinition.comparison;
 	                var _targetValue = _goalDefinition.value;
+	                var _currentValue = struct_exists(_currentState, _unmetKey) ? _currentState[$ _unmetKey] : 0;
+	                var _newValue = _currentValue + _reactionValue;
 
 	                switch (_operator)
 	                {
-	                    case ">=": 
-	                        if (_reactionValue < 0) {
+	                    case ">=": if (_reactionValue < 0) _hasUndesirableEffect = true; break;
+	                    case "<=": if (_reactionValue > 0) _hasUndesirableEffect = true; break;
+	                    case ">":  if (_reactionValue <= 0) _hasUndesirableEffect = true; break;
+	                    case "<":  if (_reactionValue >= 0) _hasUndesirableEffect = true; break;
+	                    case "=":
+	                        if (_reactionValue != 0 &&
+	                            ((_currentValue == _targetValue && _newValue != _targetValue) ||
+	                            (abs(_newValue - _targetValue) > abs(_currentValue - _targetValue))))
+	                        {
 	                            _hasUndesirableEffect = true;
-	                        }
-	                        break;
-
-	                    case "<=": 
-	                        if (_reactionValue > 0) {
-	                            _hasUndesirableEffect = true;
-	                        }
-	                        break;
-
-	                    case ">": 
-	                        if (_reactionValue <= 0) {
-	                            _hasUndesirableEffect = true;
-	                        }
-	                        break;
-
-	                    case "<": 
-	                        if (_reactionValue >= 0) {
-	                            _hasUndesirableEffect = true;
-	                        }
-	                        break;
-
-	                    case "=": 
-	                        if (_reactionValue != 0) {
-	                            var _newValue = _currentValue + _reactionValue;
-	                            if ((_currentValue == _targetValue && _newValue != _targetValue) ||
-	                                (abs(_newValue - _targetValue) > abs(_currentValue - _targetValue)))
-	                            {
-	                                _hasUndesirableEffect = true;
-	                            }
 	                        }
 	                        break;
 	                }
 	            }
-	            // Boolean/Enum/Direct Value Goals (e.g., HasWeapon: true, Status: "idle")
-	            else if (!is_struct(_goalDefinition)) 
+	            // Direct value (boolean or enum)
+	            else
 	            {
-	                if (_goalDefinition != _reactionValue) {
+	                if (_goalDefinition != _reactionValue)
+	                {
 	                    _hasUndesirableEffect = true;
 	                }
 	            }
 
-	            if (_hasUndesirableEffect) break; 
-	            
+	            if (_hasUndesirableEffect) break;
 	        }
 
 	        if (!_hasUndesirableEffect)
-			{
+	        {
 	            array_push(_filteredActions, _actName);
 	        }
 	    }
-    
-	    // Return a struct containing both the filtered actions and the count
+
 	    return _filteredActions;
-	    
 	}
 
+	
 
-
-	getConditionsToSatisfyKey = function(key, _state, visited)
+	function getPositiveReactionsFromAction(action)
 	{
-	    if (visited == undefined) visited = [];
+	    var effects = action.reactions;
+	    var positive = [];
 
-	    var requiredConditions = {};
-
-	    // Stop if already satisfied in the current state
-	    if (keyMatches(_state, {key: true}, key)) return requiredConditions;
-
-	    // Avoid cycles
-	    if (array_contains(visited, key)) return requiredConditions;
-	    array_push(visited, key);
-
-	    var producers = conditionGraph[$ key];
-	    if (producers == undefined) return requiredConditions;
-
-	    for (var i = 0; i < array_length(producers); i++) {
-	        var actName = producers[i];
-	        var action = allActions[$ actName];
-	        if (action == undefined || action.conditions == undefined) continue;
-
-	        var condKeys = struct_get_names(action.conditions);
+	    // You might already structure reactions as a map of key → value.
+	    // We treat all keys set in `reactions` as positive effects for RPG.
+	    var keys = struct_get_names(effects);
+	    for (var i = 0; i < array_length(keys); i++)
+		{
+	        var key = keys[i];
 			
-	        for (var j = 0; j < array_length(condKeys); j++)
-			{
-	            var condKey = condKeys[j];
-
-	            if (!keyMatches(_state, action.conditions, condKey))
-				{
-	                // Add this unmet condition
-	                requiredConditions[$ condKey] = action.conditions[$ condKey];
-
-	                // Recursively collect sub-conditions
-	                var subReqs = getConditionsToSatisfyKey(condKey, _state, visited);
-	                var subKeys = struct_get_names(subReqs);
-	                for (var s = 0; s < array_length(subKeys); s++)
-					{
-	                    var subKey = subKeys[s];
-	                    requiredConditions[$ subKey] = subReqs[$ subKey];
-	                }
-	            }
-	        }
-
-	        // Assume first producer is enough for now
-	        break;
+			var _react = effects[$ key];
+			
+			if (_react > 0) array_push(positive, key);
+			
+	        
 	    }
 
-	    return requiredConditions;
+	    return positive;
 	}
 
+	function getNegativeReactionsFromAction(action)
+	{
+	    var effects = action.reactions;
+	    var negative = [];
+
+	    // You might already structure reactions as a map of key → value.
+	    // We treat all keys set in `reactions` as positive effects for RPG.
+	    var keys = struct_get_names(effects);
+	    for (var i = 0; i < array_length(keys); i++)
+		{
+	        var key = keys[i];
+			
+			var _react = effects[$ key];
+			
+			if (is_bool(_react) and _react == 0)
+			{
+				array_push(negative, key);
+			}
+			else if (_react < 0)
+			{
+				array_push(negative, key);
+			}
+	        
+	    }
+
+	    return negative;
+	}
 	
 	sortActionsByScore = function(_collectedActs, _goalState)
 	{
@@ -1649,96 +1796,193 @@ function plannerGOAP(_allActions) constructor
 	}
 
 
+	
+	function trimActionsToUnmet(relevantActions, unmetKeys)
+	{
+		var actionSet = {};
+	
+		// For each unmet condition key, look up actions that can produce it
+		for (var i = 0; i < array_length(unmetKeys); i++)
+		{
+			var key = unmetKeys[i];
+		
+			if (reactionGraph[$ key] != undefined)
+			{
+				var producers = reactionGraph[$ key];
+			
+				for (var j = 0; j < array_length(producers); j++)
+				{
+					var act = producers[j];
+					struct_set(actionSet, act, act);
+				}
+			}
+		}
+	
+		// Only include relevant actions that appear in the producer set
+		var trimmed = [];
+		for (var i = 0; i < array_length(relevantActions); i++)
+		{
+			var actName = relevantActions[i];
+			if (struct_exists(actionSet, actName))
+			{
+				array_push(trimmed, actName);
+			}
+		}
+		
+		//show_debug_message($"Trimmed to {array_length(trimmed)} <- from: {array_length(relevantActions)}, Relevant actions: {trimmed}");
+		return trimmed;
+	}
+
+	
+
+	#endregion
+	
+
+	#region		--- Other A* Functions
+	
+	// --- Simulate applying an action's reactions to a state ---
+    function simulateReactions(_state, _reactions)
+    {
+		//show_debug_message("simulating");
+		
+        //var new_state = copyStruct(_state); // Start with a copy of the current state
+        var new_state = variable_clone(_state); // Start with a copy of the current state
+        var reaction_keys = struct_get_names(_reactions);
+
+        for (var i = 0; i < array_length(reaction_keys); i++)
+        {
+            var key = reaction_keys[i];
+            var reaction_value = _reactions[$ key];
+
+            // Check if the state variable exists before attempting to modify it
+            // If the reaction is to add a new state variable, add it.
+            if (!struct_exists(new_state, key))
+			{
+                 new_state[$ key] = reaction_value;
+                 planLog.logDebug($"Simulating Reaction: Added new key '{key}' with value '{string(reaction_value)}'");
+                 continue; // Move to the next reaction
+            }
+
+            // --- CORRECTED LOGIC FOR APPLYING REACTIONS ---
+            // Prioritize setting boolean values if the reaction value is a boolean.
+            if (is_bool(reaction_value))
+            {
+                 new_state[$ key] = reaction_value; // Direct assignment for booleans
+                 planLog.logDebug($"Simulating Reaction: Key '{key}' set to boolean '{string(reaction_value)}'.");
+            }
+            // Handle numerical changes (+N, -N) ONLY if the reaction value is numeric AND the state value is numeric
+            else if (is_numeric(reaction_value) && is_numeric(new_state[$ key]))
+            {
+                new_state[$ key] += reaction_value; // Apply the numerical change (add or subtract)
+                planLog.logDebug($"Simulating Reaction: Key '{key}' numerical change by {string(reaction_value)}. New value: {string(new_state[$ key])}");
+            }
+            // For all other cases (strings, or numbers for non-numeric state properties, or direct number assignments),
+            // treat it as a direct SET value.
+            else
+            {
+                 new_state[$ key] = reaction_value; // Direct assignment
+                 planLog.logDebug($"Simulating Reaction: Key '{key}' set to '{string(reaction_value)}'.");
+            }
+
+
+        }
+        return new_state;
+    }
+	
+	
+	function simulateReactionsWithCache(_currentState, _reactions) 
+	{
+	    // Create cache key from state and reactions
+	    var stateHash = hashState(_currentState);
+	    var reactionsHash = hashState(_reactions);
+	    var cacheKey = stateHash + "::" + reactionsHash;
+    
+	    // Check cache first
+	    if (struct_exists(simulation_cache, cacheKey)) 
+	    {
+	        show_debug_message("Sim cache hit");
+	        return simulation_cache[$ cacheKey];
+	    }
+		
+		show_debug_message("Sim cache miss");
+	    // Cache miss - compute simulation
+	    var simState = simulateReactions(_currentState, _reactions);
+    
+	    // Cache the result
+	    simulation_cache[$ cacheKey] = simState;
+    
+	    return simState;
+	}
+	
+
+	function state_meets_goal(sim_state, goal_state)
+	{
+	    var _goal_keys = struct_get_names(goal_state);
+	    for (var i = 0; i < array_length(_goal_keys); i++)
+		{
+	        var _key = _goal_keys[i];
+	        if (!keyMatches(sim_state, goal_state, _key))
+			{
+	            return false; // Early exit if any condition fails
+	        }
+	    }
+	    return true; // All conditions passed
+	}
+
+
+	// Eats up Time during planning(ms)
+	ancestorHasState = function(node, new_state)
+	{
+	    var new_key = hashState(new_state);
+		//show_debug_message("----------------------------------");
+	    while (node != undefined && node != noone)
+	    {
+	        var node_key = hashState(node.state);
+			
+			//show_debug_message($"New Key: {new_key}");
+			//show_debug_message($"Node Key: {node_key}");
+			
+	        if (node_key == new_key)
+	        {
+	            return true;
+	        }
+	        node = node.parent;
+	    }
+
+	    return false;
+	}
+	
+	
+	// Reconstructs the plan from the goal node by walking back through parents
+	reconstructPlan = function(_node)
+	{
+		var plan = [];
+		while (_node.parent != undefined)
+		{
+			array_insert(plan, 0, _node.action); // insert action at beginning
+			_node = _node.parent;
+		}
+		return plan;
+	}
+
+	
+	isHelpfulAction = function(_reactions, _unmetKeys)
+	{
+		var _r = struct_get_names(_reactions);
+		for(var i=0; i<array_length(_r); i++)
+		{
+			var _key = _r[i];
+	        if (array_contains(_unmetKeys, _key)) return true;
+	    }
+	    return false;
+	}
+	
+	#endregion
+	
+
 	#endregion
 	
 	
-	
-	goalHeuristic = function(_currentState, _goalState)
-	{
-		var _startMS = current_time;
-		
-	    var _totalHeuristicCost = 0;
-	    var _unmetConditions = getUnmetConditionsIterative(_goalState, _currentState); 
-		
-		//_unmetConditions = planLog.doProfile("getUnmetConditionsIterative", getUnmetConditionsIterative, [_goalState, _currentState]);
-		
-		var _minCostPerKey = actionCostData.MinCostPerKey;
-		var _minCostToAchieve = actionCostData.MinCostToAchieve;
-
-	    var _avg_cost = getAverageActionCost(); // Still a useful fallback
-
-	    for (var i = 0; i < array_length(_unmetConditions); i++)
-	    {
-	        var _key = _unmetConditions[i];
-
-        
-	        var _goalDefinition = _goalState[$ _key]; 
-
-	        // --- NEW/UPDATED LOGIC: Handle missing keys using calculated heuristic data ---
-	        if (!struct_exists(_currentState, _key))
-	        {
-	            var cost_for_missing_key = _avg_cost/10; // Default fallback if no specific data is found
-
-	            if (is_struct(_goalDefinition)) // It's a numerical comparison goal (e.g., {comparison:">=", value:10})
-	            {
-	                // Estimate the cost to get to the required amount from zero, using cost_per_unit
-	                var needed_amount = _goalDefinition.value;
-                
-	                // Use global.GOAP_MinCostPerUnit_Data if available, otherwise fallback to average
-	                var cost_per_unit = struct_exists(_minCostPerKey, _key) ? _minCostPerKey[$ _key] : _avg_cost;
-                
-	                cost_for_missing_key = needed_amount * cost_per_unit;
-	                if (cost_for_missing_key <= 0) cost_for_missing_key = _avg_cost; // Ensure minimum if goal value is 0 or less
-	            }
-	            else // It's a simple boolean/value goal (e.g., true, "item_name", or 0/1)
-	            {
-	                var target_value_str = string(_goalDefinition);
-                
-	                // Use global.GOAP_MinCostToAchieve_Data for direct lookup
-	                if (struct_exists(_minCostToAchieve, _key) && struct_exists(_minCostToAchieve[$ _key], target_value_str))
-	                {
-	                    cost_for_missing_key = _minCostToAchieve[$ _key][target_value_str];
-	                }
-	            }
-            
-	            _totalHeuristicCost += cost_for_missing_key;
-	            continue; // Move to the next unmet condition
-	        }
-
-	        // --- Existing logic for keys that exist but don't meet the goal ---
-	        var _currentValue = _currentState[$ _key];
-
-	        // Now, use the getConditionGap function, which will also be updated to use the new data
-	        // We'll pass the global heuristic data to getConditionGap
-	        var _val = getConditionGap(_currentValue, _goalDefinition, _key);
-	        _totalHeuristicCost += _val;
-	    }
-
-
-		//show_debug_message($"Goal Heuristic MS: {current_time - _startMS}");
-
-	    return _totalHeuristicCost;
-	}
-	
-	
-	calculateHeuristic  = function(_currentState, _goalState, _stateHash, _goalStateHash)
-	{
-		var _key = _stateHash + "|" + _goalStateHash;
-		
-		if (struct_exists(heuristic_cache, _key))
-		{
-			var _data = struct_get(heuristic_cache, _key);
-			
-			//show_debug_message("Heuristic cache hit.");
-			
-			return _data;
-		}
-		
-		var _h = goalHeuristic(_currentState, _goalState);
-	    struct_set(heuristic_cache, _key, _h);
-		
-	    return _h;
-	}
 	
 	
 	#region		---[ Node Data Collection ]---
@@ -1843,10 +2087,12 @@ function plannerGOAP(_allActions) constructor
 		
 		if _showSimpleData
 		{
+			show_debug_message("--- GOAP Planner Performance Report ---");
 			show_debug_message($"Node Data: [Total: {_totalNodes}, Pruned: {_truePruned}, Expanded: {nodeData.expanded}, Stale: {nodeData.stale}, Prune Ratio: {_pruneRatio}]");
 		    show_debug_message($"Node Data: [Efficiency: {_expansionEfficiency}, Branching: {_branchingFactor}, Goal Efficiency: {_goalEfficiency}]");
 		    show_debug_message($"Node Data: [Re-Expansion Rate: {_reExpansionRate}, Average Heuristic Rate: {_avgHeuristicRate}, Plan G-Cost: {_planGCost}]");
 			show_debug_message($"Node Data: [Heuristic Cost Ratio: {_heuristicCostRatio}, Extra Nodes Expanded: {_extraExpandedNodes}, Excess Node Expansion Ratio: {_expansionOverheadRatio}]");
+			show_debug_message("-------------------------------------");
 		}
 		else
 		{
@@ -1891,40 +2137,166 @@ function plannerGOAP(_allActions) constructor
 	}
 	
 	
-	buildSubGoal = function(_startState, _goalState)
+	function buildSubGoals(_startState, _goalState)
 	{
-		var _unmet = getUnmetNonExplicitConditions(_goalState, _startState);
-		show_debug_message($"Non-Explicit Keys: {_unmet}");
+	    var keys = struct_get_names(_goalState);
+	    var rawSubgoals = [];
+	    var subgoalInfo = []; // [{ goal: {}, unmet: [...] }]
 
-		var _mergedSubGoal = {};
+	    // Step 1: Break into atomic subgoals and get unmet conditions
+	    for (var i = 0; i < array_length(keys); i++)
+	    {
+	        var key = keys[i];
+	        var singleGoal = {};
+	        singleGoal[$ key] = _goalState[$ key];
 
-		for (var i = 0; i < array_length(_unmet); i++)
-		{
-			var _key = _unmet[i];
-			var _con = getConditionsToSatisfyKey(_key, _startState);
+	        var unmet = getUnmetNonExplicitConditions(singleGoal, _startState);
 
-			var _keys = struct_get_names(_con);
-			for (var j = 0; j < array_length(_keys); j++)
-			{
-				var _condKey = _keys[j];
+	        array_push(subgoalInfo, { goal: singleGoal, unmet: unmet });
+	    }
 
-				// Optional: Prevent overwriting if key already exists
-				if (!struct_exists(_mergedSubGoal, _condKey))
+	    // Step 2: Group subgoals by shared unmet keys
+	    var groups = [];
+
+	    for (var i = 0; i < array_length(subgoalInfo); i++)
+	    {
+	        var current = subgoalInfo[i];
+	        var merged = false;
+
+	        for (var j = 0; j < array_length(groups); j++)
+	        {
+	            var group = groups[j];
+	            var overlap = false;
+
+	            // Check for overlap in unmet keys
+	            for (var k = 0; k < array_length(current.unmet); k++)
+	            {
+	                var key = current.unmet[k];
+	                if (array_contains(group.unmetSet, key))
+					{
+	                    overlap = true;
+	                    break;
+	                }
+	            }
+
+	            if (overlap)
 				{
-					_mergedSubGoal[$ _condKey] = _con[$ _condKey];
-				}
-			}
+	                // Merge into existing group
+	                deepMergeStructs(group.goal, current.goal); // combine keys
+					
+	                group.unmetSet = array_union(group.unmetSet, current.unmet); // combine unmet keys
+	                merged = true;
+	                break;
+	            }
+	        }
+
+	        if (!merged)
+			{
+	            // Create new group
+	            array_push(groups, {
+	                goal: current.goal,
+	                unmetSet: variable_clone(current.unmet)
+	            });
+	        }
+	    }
+
+		// Combine all groups with zero unmet keys into one group
+	    var combinedZeroUnmetGoal = {};
+	    var newGroups = [];
+	    var hasZeroUnmet = false;
+
+	    //for (var i = 0; i < array_length(groups); i++)
+	    //{
+	    //    if (array_length(groups[i].unmetSet) == 0)
+	    //    {
+	    //        mergeStructs(combinedZeroUnmetGoal, groups[i].goal);
+	    //        hasZeroUnmet = true;
+	    //    }
+	    //    else
+	    //    {
+	    //        array_push(newGroups, groups[i]);
+	    //    }
+	    //}
+		
+		for (var i = 0; i < array_length(groups); i++)
+		{
+		    if (array_length(groups[i].unmetSet) == 0)
+		    {
+		        show_debug_message("Merging zero unmet goal: " + string(groups[i].goal));
+		        mergeStructs(combinedZeroUnmetGoal, groups[i].goal);
+		        hasZeroUnmet = true;
+		        show_debug_message("Current combined goal: " + string(combinedZeroUnmetGoal));
+		    }
+		    else
+		    {
+		        array_push(newGroups, groups[i]);
+		    }
 		}
 
-		show_debug_message("Merged Sub Goal:");
-		show_debug_message(_mergedSubGoal);
+	    if (hasZeroUnmet)
+	    {
+	        array_push(newGroups, {
+	            goal: combinedZeroUnmetGoal,
+	            unmetSet: []
+	        });
+	    }
 
-		// Return or use mergedSubGoal as needed
-		return _mergedSubGoal;
+		array_sort(groups, function(a, b)
+		{
+		    return array_length(a.unmetSet) - array_length(b.unmetSet);
+		});
+		
+	    // Step 3: Flatten groups to just goals
+	    var result = [];
+	    for (var i = 0; i < array_length(groups); i++)
+	    {
+	        array_push(result, groups[i].goal);
+	    }
+
+	    return result;
 	}
 
 
-	findPlan = function(_startState, _goalState)
+	function buildFullPlanFromSubgoals(_startState, _subGoals)
+	{
+	    var currentState = (_startState);
+	    var fullPlan = [];
+    
+	    for (var i = 0; i < array_length(_subGoals); i++)
+	    {
+	        var subgoal = _subGoals[i];
+        
+	        // Run your planner with current state and current subgoal
+	        var partialPlan = findPlan(currentState, subgoal);
+        
+	        if (array_length(partialPlan) == 0)
+	        {
+	            show_debug_message("Failed to find plan for subgoal Group: " + string(i+1));
+	            return partialPlan; // Or handle failure as you see fit
+	        }
+			show_debug_message($"Partial Plan: {partialPlan}");
+			fullPlan = array_concat(fullPlan, partialPlan);
+        
+	        // Simulate partial plan reactions to update current state for next subgoal
+	        // Simulate effects of partial plan on currentState
+			
+	        for (var j = 0; j < array_length(partialPlan); j++)
+	        {
+	            var actionName = partialPlan[j];
+	            var action = allActions[$ actionName];
+				currentState = simulateReactions(currentState, action.reactions);
+	            
+	        }
+	    }
+    
+	    return fullPlan;
+	}
+
+	
+	
+	// Creating the plan the CORE of GOAP.
+
+	function findPlan(_startState, _goalState)
 	{
 		
 		#region	<Init Vars>
@@ -1939,6 +2311,8 @@ function plannerGOAP(_allActions) constructor
 		var _relevantActionsCache = {};  // cacheKey -> filtered actions array
 		
 		
+		var _currentBound = infinity;
+		
 		var _nonDeterministic = false;		// can lower speed of the planner
 		
 		var _open = ds_priority_create();
@@ -1952,7 +2326,10 @@ function plannerGOAP(_allActions) constructor
 		
 		var _startHash = hashState(_startState);
 		var _goalStateHash = hashState(_goalState);
-		var _startNode = new astarNode(_startState, undefined, undefined, 0, calculateHeuristic(_startState, _goalState, _startHash, _goalStateHash));
+		
+		
+		var _startNode = new astarNode(_startState, undefined, undefined, 0, calculateHeuristic(_startState, _goalState, _startHash, _goalStateHash, getAllUnmetConditions(_goalState, _startState)));
+		//var _startNode = new astarNode(_startState, undefined, undefined, 0, calculateHeuristic(_startState, _goalState, _startHash, _goalStateHash, []));
 		
 		
 		struct_set(_visitedNodes, _startHash, _startNode);
@@ -1964,8 +2341,11 @@ function plannerGOAP(_allActions) constructor
 		
 		var _printEvery = false;
 		
+		//show_debug_message($"Target GOAL: {targetGoal}");
+		
 		show_debug_message($"Goal State: {_goalState}");
-		show_debug_message($"Start State: {_startState}");
+		//show_debug_message($"Start State: {_startState}");
+		
 		
 		
 		// A* Pathfinding from _startState -> _goalState
@@ -1985,6 +2365,7 @@ function plannerGOAP(_allActions) constructor
 			var _currentAction = _node.action;
 			var _stateHash = hashState(_currentState);
 			
+			
 			#endregion
 			
 			
@@ -1995,14 +2376,12 @@ function plannerGOAP(_allActions) constructor
 			nodeData.expanded++;
 			
 
-			//if !is_undefined(_currentAction) and (_printEvery) show_debug_message($"Trying Action: {_currentAction.name}");
-			
 			#region		--- Dynamic Action Filtering ---
 			
 			
 			var _startFil = current_time;
 			
-			var _unmetGoalKeys = getUnmetConditionsIterative(_goalState, _currentState);
+			var _unmetGoalKeys = getAllUnmetConditions(_goalState, _currentState);
 			var _collectedActs;
 			
 			// Same unmet goal patterns should produce same relevant actions
@@ -2015,14 +2394,17 @@ function plannerGOAP(_allActions) constructor
 			} else {
 			    _collectedActs = collectRelevantActions(_unmetGoalKeys);
 			    _collectedActs = trimActionsToUnmet(_collectedActs, _unmetGoalKeys);
+				_collectedActs = filterActionsByNegativeEffects(_collectedActs, _currentState, _unmetGoalKeys, _goalState);
+				_collectedActs = sortActionsByScore(_collectedActs, _goalState);
+				
 			    struct_set(_relevantActionsCache, _goalPatternKey, _collectedActs);
 			}
 			
-			_collectedActs = filterActionsByNegativeEffects(_collectedActs, _currentState, _unmetGoalKeys, _goalState);
 			
+			
+			// makes it run slightly slower
 			//show_debug_message($"Filtered Actions ({array_length(_collectedActs)}): {_collectedActs}");
 			
-			_collectedActs = sortActionsByScore(_collectedActs, _goalState);
 			
 			
 			var _endTimeFil = current_time - _startFil;
@@ -2046,7 +2428,6 @@ function plannerGOAP(_allActions) constructor
 
 				nodeData.actionsTried++; // Count every applicable action per node
 				
-				//show_debug_message($"Trying Action: {_actName}");
 				
 				#region			--- Pruning Before Simulating State ---
 				
@@ -2058,90 +2439,70 @@ function plannerGOAP(_allActions) constructor
 					continue;
 				}
 				
+				//if !isHelpfulAction(_act.reactions, _unmetGoalKeys)
+				//{
+				//	show_debug_message($"Action ({_actName}) isnt helpful.");
+				//	nodeData.pruned++;
+				//	continue;
+				//}
+				
 				
 				
 				#endregion
 				
 				
 				var _simState = simulateReactions(_currentState, _act.reactions);
-				//_simState = planLog.doProfile("simulateReactions", simulateReactions, [_currentState, _act.reactions])
 				var _simHash = hashState(_simState);
 				
-				
-				//var _simCacheKey = hashState(_currentState) + "::" + _actName + ":" + string(_act.reactions);
-				//var _simState;
-
-				//if (struct_exists(simulation_cache, _simCacheKey))
-				//{
-				//    _simState = simulation_cache[$ _simCacheKey];
-				//} else {
-				//    _simState = simulateReactions(_currentState, _act.reactions);
-				//    struct_set(simulation_cache, _simCacheKey, _simState);
-				//}
-
+				//var _simState = simulateReactionsWithCache(_currentState, _act.reactions);
 				//var _simHash = hashState(_simState);
+				
 				
 				#region			--- Pruning After Simulating State ---
 				
+				//if ancestorHasState(_node, _simState)
+				//{
+				//	show_debug_message("Ancestor Has State.");
+				//	nodeData.pruned++;
+				//	continue;
+				//}
 				
-				
-				var _hAfter = calculateHeuristic(_simState, _goalState, _simHash, _goalStateHash);
+				var _hAfter = calculateHeuristic(_simState, _goalState, _simHash, _goalStateHash, _unmetGoalKeys);
 				
 				// Apply heuristic consistency correction
 				var _correctedH = max(_hAfter, _node.hCost - _act.cost);
-			
-				// move this below everything so ur not wastefully creating structs for the garbage collectors
-				var _newNode = new astarNode(_simState,_act,_node, (_node.gCost + _act.cost), _correctedH);
+				var _gCost = _node.gCost + _act.cost;
+				var _fCost = _gCost + _correctedH;
 				
 				
-				// Optional: Diagnostic output
-				if (_newNode.hCost != _hAfter)
-				{
-					
-					/*
-					
-						"Hey, this action cost more than you thought
-						it would get us closer to the goal,
-						so I'm pretending the goal is still a bit further away."
-					
-					*/
-					
-					//show_debug_message("Heuristic corrected: " + string(_hAfter) + " -> " + string(_newNode.hCost));
-					
-				}
 				
-				
-				// --- Move deduplication check here ---
 				var enqueueNode = false;
+
 				if (struct_exists(_visitedNodes, _simHash))
 				{
 				    var _existingOldNode = _visitedNodes[$ _simHash];
-    
-				    if (_newNode.gCost >= _existingOldNode.gCost)
+
+				    if (_gCost >= _existingOldNode.gCost)
 					{
 				        nodeData.pruned++;
 				        continue;
 				    }
-    
-				    // Better path found
+
 				    nodeData.stale++;
-					
-					// Stale check passed — better path found
-					//show_debug_message("Stale node detected: Better path to same state");
-					
 				    enqueueNode = true;
 				} else {
 				    enqueueNode = true;
 				}
 
 				if (!enqueueNode) continue;
+				
 
-				// --- Now do action-set tracking (after pruning) ---
+				// Action-set tracking (after dedup)
 				if (!struct_exists(_stateActionsMap, _simHash))
 				{
 				    struct_set(_stateActionsMap, _simHash, {});
 				}
-				
+
 				var _actionSet = _stateActionsMap[$ _simHash];
 				if (struct_exists(_actionSet, _actName))
 				{
@@ -2149,24 +2510,57 @@ function plannerGOAP(_allActions) constructor
 				    continue;
 				}
 
-				// Enqueue node only after passing dedup + action check
-				struct_set(_visitedNodes, _simHash, _newNode);
-				var priority = _newNode.fCost + (_newNode.hCost * 0.0001);
-				ds_priority_add(_open, _newNode, priority);
-				struct_set(_actionSet, _actName, true);
+				// Only create the node, after passing all checks
+				var _newNode = new astarNode(_simState, _act, _node, _gCost, _correctedH);
 
-				// Goal check
-				if (state_meets_goal(_simState, _goalState))
+				// Enqueue node
+				struct_set(_visitedNodes, _simHash, _newNode);
+				
+				
+				var initialWeight = 1//.000002; // put this to 1 to make it non greedy
+				var finalWeight = 1.0;
+
+				// Normalize heuristic progress relative to startH
+				var progress = clamp(1.0 - (_correctedH / (_startNode.hCost+0.000001)), 0, 1);
+				var dynamicWeight = lerp(initialWeight, finalWeight, progress);
+
+				var _priority = _gCost + _correctedH * dynamicWeight;
+
+				
+				
+				if (_priority > _currentBound)
 				{
-				    var _f = _newNode.gCost + _newNode.hCost;
-				    if (_f < _bestFSoFar)
-					{
-				        _bestFSoFar = _f;
-				        _bestGoalNode = _newNode;
-				    }
+					//show_debug_message("prune expensive paths beyond bound");
+				    nodeData.pruned++;
+				    continue;  // prune expensive paths beyond bound
 				}
 				
+				//show_debug_message($"Dynamic Weight: {dynamicWeight}");
 				
+				//weighted A*
+				//var weight = 1.0; // Try values between 1.1 and 3.0
+				//var _priority = _gCost + _correctedH * weight; 
+				
+				
+				ds_priority_add(_open, _newNode, _priority);
+				struct_set(_actionSet, _actName, true);
+
+				// Check for new best goal
+				if (state_meets_goal(_simState, _goalState))
+				{
+				    if (_fCost < _bestFSoFar)
+					{
+						//_currentBound = _fCost;  // tighten bound
+						_currentBound = min(_currentBound, _fCost);
+						
+						
+				        _bestFSoFar = _fCost;
+				        _bestGoalNode = _newNode;
+				    }
+					
+					//show_debug_message("Meets GOAL");
+				}
+
 				
 				#endregion
 				
@@ -2200,17 +2594,15 @@ function plannerGOAP(_allActions) constructor
 		}
 		
 		
-		
-		
-		
 		return _finalPlan;
 	}
+	
 	
 	
 	createPlan = function(_startState, _goalState)
 	{
 		
-		show_debug_message("Create Plan started...");
+		show_debug_message($"Creating Plan started...");
 		
 	    setupActionData(); // find a better place to put this ltr.
 
@@ -2223,20 +2615,17 @@ function plannerGOAP(_allActions) constructor
 			return cached_plan; // Return the cached plan immediately
 		}
 		
+		var _subGoals = buildSubGoals(_startState, _goalState);
 		
+		show_debug_message($"Sub Goal Groups: {_subGoals}");
 		
-		var _subGoalState = buildSubGoal(_startState, _goalState);
+		var _subPlan = buildFullPlanFromSubgoals(_startState, _subGoals);
 		
-		//show_debug_message($"Sub Goal Target State: {_subGoalState}");
-		//show_debug_message($"Main Goal Target State: {_goalState}");
-		
-		
-		//var _subGoalPlan = findPlan(_startState, _subGoalState);
+		show_debug_message($"Sub Goal Plan: {_subPlan}");
 		
 		//var _finalPlan = findPlan(_startState, _goalState);
 		
-		//var _subGoalPlan = planLog.doProfile("_subGoalPlan", findPlan, [_startState, _subGoalState]);
-		//show_debug_message($"Sub Goal Plan: {_subGoalPlan}");
+		
 		
 		var _finalPlan = planLog.doProfile("_finalPlan", findPlan, [_startState, _goalState]);
 		//show_debug_message($"Full Goal Plan: {_finalPlan}");
