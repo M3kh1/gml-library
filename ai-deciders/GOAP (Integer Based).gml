@@ -61,7 +61,6 @@ function hashState(_state)
 	return string(_state);
 }
 
-
 function copyStruct(_original) 
 {
     var copy = {};
@@ -70,7 +69,16 @@ function copyStruct(_original)
     for (var i = 0; i < array_length(keys); i++) 
     {
         var key = keys[i];
-        copy[$ key] = _original[$ key];
+        var value = _original[$ key];
+
+        if (is_struct(value))
+		{
+            // Recursively copy nested struct
+            copy[$ key] = copyStruct(value);
+        } else {
+            // Copy primitive or simple value
+            copy[$ key] = value;
+        }
     }
     
     return copy;
@@ -91,7 +99,8 @@ function mergeStructs(_target, _source)
 function deepMergeStructs(a, b)
 {
     var keys = struct_get_names(b);
-    for (var i = 0; i < array_length(keys); i++) {
+    for (var i = 0; i < array_length(keys); i++)
+	{
         var key = keys[i];
 
         if (is_struct(a[$ key]) && is_struct(b[$ key]))
@@ -336,7 +345,7 @@ function brainGOAP() constructor
 	
 	#region		<Run the Plan>
 	
-	LogPlanExe = new Logger("GOAP/Brain/Plan-Executor", true, [LogLevel.warning]);
+	LogPlanExe = new Logger("GOAP/Brain/Plan-Executor", true, [LogLevel.debug, LogLevel.info, LogLevel.warning]);
 	
 	checkReactionDelta = function(startState, endState, expectedChanges)
 	{
@@ -484,7 +493,10 @@ function brainGOAP() constructor
 	    // 5. Preconditions must hold
 	    if (!planner.checkKeysMatch(_action.conditions, captureSensorSnapshot()))
 	    {
-			LogPlanExe.logDebug($"Preconditions failed for '{_actionName}'. Replanning...");
+			
+			LogPlanExe.logDebug($"Preconditions failed for '{_actionName}'. ({currentActionIndex+1}) Replanning...");
+			LogPlanExe.logDebug($"_action.conditions: {_action.conditions}");
+			LogPlanExe.logDebug($"captureSensorSnapshot(): {captureSensorSnapshot()}");
 	        generatePlan();
 	        return;
 	    }
@@ -601,8 +613,8 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 			conditionGraph = _graphs.con;
 			reactionGraph = _graphs.react;
 			
-			//show_debug_message($"Condition Graph: {conditionGraph}");
-			//show_debug_message($"Reaction Graph: {reactionGraph}");
+			show_debug_message($"Condition Graph:\n {conditionGraph}");
+			show_debug_message($"Reaction Graph:\n {reactionGraph}");
 			
 			actionCostData = calculateMinActionCostsHeuristicData();
 		}
@@ -612,96 +624,7 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	
 	#region		--- Heuristic Functions ---
 	
-	function buildRelaxedPlanningGraph(_startState, _goalState)
-	{
-	    var knownFacts = {};
-	    var newFacts = [];
 
-	    // initialize knownFacts with start state facts, cost = 0
-	    var startKeys = struct_get_names(_startState);
-	    for (var i = 0; i < array_length(startKeys); i++)
-		{
-	        var k = startKeys[i];
-			
-			var val = _startState[$ k];
-
-			if (val != 0)
-			{
-			    struct_set(knownFacts, k, 0);
-			    array_push(newFacts, k);
-			}
-			
-	        //struct_set(knownFacts, k, 0);
-	        //array_push(newFacts, k);
-	    }
-
-		show_debug_message($"Start State: {_startState}");
-
-	    var iteration = 0;
-	    var maxIterations = 1000;
-
-	    while (array_length(newFacts) > 0 && iteration < maxIterations)
-	    {
-	        iteration++;
-	        var nextNewFacts = [];
-
-	        var actionNames = struct_get_names(allActions);
-	        for (var a = 0; a < array_length(actionNames); a++) {
-	            var actName = actionNames[a];
-	            var action = allActions[$ actName];
-
-	            if (areAllConditionsMet(action.conditions, knownFacts))
-	            {
-	                var addKeys = getPositiveReactionsFromAction(action);
-
-	                for (var j = 0; j < array_length(addKeys); j++)
-	                {
-	                    var key = addKeys[j];
-	                    var oldCost = struct_exists(knownFacts, key) ? knownFacts[$ key] : 999999;
-
-	                    var newCost = iteration + action.cost;
-						show_debug_message($"New Cost: {newCost}");
-	                   
-						
-						if (newCost < oldCost)
-						{
-						    struct_set(knownFacts, key, newCost);
-						    array_push(nextNewFacts, key);
-						    show_debug_message("Added/Updated fact: " + string(key) + " cost: " + string(newCost));
-						}
-	                }
-	            }
-	        }
-
-	        newFacts = nextNewFacts;
-
-	        // Optional early stop if all goal keys are met here if you want
-			break;
-	    }
-
-	    return knownFacts;
-	}
-
-
-	function computeHeuristicFromRPG(knownFacts, _goalState, heuristicType="")
-	{
-	    var goalKeys = struct_get_names(_goalState);
-
-	    var hMax = 0;
-	    var hSum = 0;
-	    for (var g = 0; g < array_length(goalKeys); g++) {
-	        var goalKey = goalKeys[g];
-	        var cost = struct_exists(knownFacts, goalKey) ? knownFacts[$ goalKey] : 999999;
-	        hSum += cost;
-	        if (cost > hMax) hMax = cost;
-	    }
-
-	    if (heuristicType == "max") return hMax;
-	    else if (heuristicType == "sum") return hSum;
-	    else return hMax; // default
-	}
-	
-	
 	function goalHeuristic(_currentState, _goalState, _unmet)
 	{
 		var _startMS = current_time;
@@ -974,7 +897,6 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	}
 
 
-	
 	function checkKeysMatch(_conditions_or_reactions, _state_to_check) // Renamed parameters for clarity
 	{
 	    var _keys = struct_get_names(_conditions_or_reactions); // Iterate keys from the conditions/reactions set
@@ -990,7 +912,6 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	    return true; // If all keys matched, the whole set matches
 	}
 
-	
 	
 	function keyMatches(_state_to_check, _target_struct, _key_to_check)
 	{
@@ -1375,55 +1296,6 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	}
 	
 	
-	
-	
-	function buildConditionDepthGraph(goalState)
-	{
-	    var visited = {};
-	    var depthGraph = []; // array of arrays: depthGraph[depth] = [condition keys]
-	    var queue = [];
-
-	    // Seed with explicit goal condition keys
-	    var goalKeys = struct_get_names(goalState);
-	    for (var i = 0; i < array_length(goalKeys); i++) {
-	        var key = goalKeys[i];
-	        visited[$ key] = 0;
-	        array_push(queue, [key, 0]);
-	    }
-
-	    while (array_length(queue) > 0) {
-	        var pair = array_shift(queue);
-	        var key = pair[0];
-	        var _depth = pair[1];
-
-	        depthGraph[_depth] = [];
-	        if (!array_contains(depthGraph[_depth], key)) array_push(depthGraph[_depth], key);
-
-	        var producers = conditionGraph[$ key];
-	        if (producers == undefined) continue;
-
-	        for (var j = 0; j < array_length(producers); j++) {
-	            var actName = producers[j];
-	            var action = allActions[$ actName];
-	            if (action == undefined || action.conditions == undefined) continue;
-
-	            var condKeys = struct_get_names(action.conditions);
-	            for (var k = 0; k < array_length(condKeys); k++) {
-	                var condKey = condKeys[k];
-
-	                // Only enqueue if not already visited or found at a deeper depth
-	                if (!struct_exists(visited, condKey) || visited[$ condKey] > _depth + 1) {
-	                    visited[$ condKey] = _depth + 1;
-	                    array_push(queue, [condKey, _depth + 1]);
-	                }
-	            }
-	        }
-	    }
-
-	    return depthGraph;
-	}
-
-	
 	#endregion
 	
 	
@@ -1541,7 +1413,7 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	    return result;
 	}
 	
-	
+
 	#endregion
 	
 	
@@ -1962,7 +1834,7 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 			array_insert(plan, 0, _node.action); // insert action at beginning
 			_node = _node.parent;
 		}
-		return plan;
+		return array_reverse(plan);
 	}
 
 	
@@ -2123,8 +1995,8 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	}
 
 
-
 	#endregion	
+	
 	
 	function astarNode(_state, _action, _parent, _gCost, _hCost) constructor
 	{
@@ -2137,165 +2009,447 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	}
 	
 	
+	
 	function buildSubGoals(_startState, _goalState)
 	{
 	    var keys = struct_get_names(_goalState);
-	    var rawSubgoals = [];
-	    var subgoalInfo = []; // [{ goal: {}, unmet: [...] }]
+	    var subgoalInfo = []; // [{ goal: {}, unmet: [...], category: string }]
 
-	    // Step 1: Break into atomic subgoals and get unmet conditions
+	    // Step 1: Break into atomic subgoals and get unmet conditions, categorize them
 	    for (var i = 0; i < array_length(keys); i++)
-	    {
-	        var key = keys[i];
-	        var singleGoal = {};
-	        singleGoal[$ key] = _goalState[$ key];
+		{
+		    var key = keys[i];
+		    var singleGoal = {};
+		    singleGoal[$ key] = _goalState[$ key];
+		    var unmet = getUnmetNonExplicitConditions(singleGoal, _startState);
+        
+		    var category = "Other"; // Default category
 
-	        var unmet = getUnmetNonExplicitConditions(singleGoal, _startState);
+		    var goalValue = _goalState[$ key];
+		    if (is_bool(goalValue)) {
+		        if (goalValue == true) {
+		            // Goals like "HasWeapon: true", "HasPowerGenerator: true"
+		            // These are often foundational items/structures that unlock other capabilities.
+		            category = "AcquireBooleanTrue"; 
+		        } else { // goalValue == false
+		            // Goals like "WeaponNeedsRepair: false", "GeneratorNeedsMaintenance: false"
+		            // These typically represent maintenance or state correction.
+		            category = "CorrectBooleanFalse";
+		        }
+		    } else if (is_struct(goalValue) && struct_exists(goalValue, "value") && is_numeric(goalValue.value)) {
+		        // Numerical conditions, e.g., "Ammo: >= 10", "Scrap: >= 25", "Energy: >= 100"
+		        // These often represent resource accumulation or threshold achievement.
+		        category = "AchieveNumericalThreshold";
+		    }
+		    // If there are other complex types, they'd fall into "Other" or get new categories here.
 
-	        array_push(subgoalInfo, { goal: singleGoal, unmet: unmet });
-	    }
+		    array_push(subgoalInfo, { 
+		        goal: singleGoal, 
+		        unmet: unmet, 
+		        category: category
+		    });
+		}
 
-	    // Step 2: Group subgoals by shared unmet keys
-	    var groups = [];
+		// Step 2: Initial Grouping by Shared Unmet Keys
+		// This step combines subgoals that naturally depend on the same preconditions.
+		var groups = [];
+		for (var i = 0; i < array_length(subgoalInfo); i++)
+		{
+		    var current = subgoalInfo[i];
+		    var merged = false;
+		    for (var j = 0; j < array_length(groups); j++)
+		    {
+		        var group = groups[j];
+		        var overlap = false;
+		        for (var k = 0; k < array_length(current.unmet); k++)
+		        {
+		            var key = current.unmet[k];
+		            if (array_contains(group.unmetSet, key))
+		            {
+		                overlap = true;
+		                break;
+		            }
+		        }
+		        if (overlap)
+		        {
+		            deepMergeStructs(group.goal, current.goal);
+		            group.unmetSet = array_union(group.unmetSet, current.unmet);
+		            // When merging, if any part of the merged group was a specific category,
+		            // the merged group inherits that "stronger" category for sorting purposes.
+		            // This logic might need refinement based on desired merge behavior.
+		            // For simplicity here, if the current item is a specific category, it takes precedence.
+		            if (current.category != "Other") {
+		                group.category = current.category;
+		            }
+		            merged = true;
+		            break;
+		        }
+		    }
+		    if (!merged)
+		    {
+		        array_push(groups, {
+		            goal: current.goal,
+		            unmetSet: variable_clone(current.unmet),
+		            category: current.category
+		        });
+		    }
+		}
+		show_debug_message($" Step 2: Groups ({array_length(groups)}): {groups}");
+		
+		// --- Step 3: Aggressive/Strategic Combination ---
+	    var combinedGroups = [];
+	    var processedIndices = array_create(array_length(groups)); // Track which groups have been processed
 
-	    for (var i = 0; i < array_length(subgoalInfo); i++)
-	    {
-	        var current = subgoalInfo[i];
-	        var merged = false;
+	    for (var i = 0; i < array_length(groups); i++) {
+	        if (processedIndices[i]) continue;
 
-	        for (var j = 0; j < array_length(groups); j++)
-	        {
-	            var group = groups[j];
-	            var overlap = false;
+	        var currentGroup = groups[i];
+	        var mergedThisIteration = false;
 
-	            // Check for overlap in unmet keys
-	            for (var k = 0; k < array_length(current.unmet); k++)
-	            {
-	                var key = current.unmet[k];
-	                if (array_contains(group.unmetSet, key))
-					{
-	                    overlap = true;
-	                    break;
+	        // Strategy 1: Combine all "AchieveNumericalThreshold" goals that are still unmet.
+	        // This is a common pattern where accumulating one resource (money) helps another (seeds, water).
+	        if (currentGroup.category == "AchieveNumericalThreshold" && array_length(currentGroup.unmetSet) > 0) {
+	            var tempCombinedGoal = variable_clone(currentGroup.goal);
+	            var tempCombinedUnmet = variable_clone(currentGroup.unmetSet);
+	            var combinedCount = 1;
+
+	            for (var j = i + 1; j < array_length(groups); j++) {
+	                if (processedIndices[j]) continue;
+
+	                var otherGroup = groups[j];
+	                if (otherGroup.category == "AchieveNumericalThreshold" && array_length(otherGroup.unmetSet) > 0) {
+	                    deepMergeStructs(tempCombinedGoal, otherGroup.goal);
+	                    tempCombinedUnmet = array_union(tempCombinedUnmet, otherGroup.unmetSet);
+	                    processedIndices[j] = true;
+	                    combinedCount++;
 	                }
 	            }
 
-	            if (overlap)
-				{
-	                // Merge into existing group
-	                deepMergeStructs(group.goal, current.goal); // combine keys
-					
-	                group.unmetSet = array_union(group.unmetSet, current.unmet); // combine unmet keys
-	                merged = true;
-	                break;
+	            if (combinedCount > 1) { // If actual merging happened
+	                array_push(combinedGroups, {
+	                    goal: tempCombinedGoal,
+	                    unmetSet: tempCombinedUnmet,
+	                    category: "AchieveNumericalThreshold" // Maintain category
+	                });
+	                processedIndices[i] = true; // Mark the original group as processed
+	                mergedThisIteration = true;
+	                show_debug_message($" Strategically combined {combinedCount} 'AchieveNumericalThreshold' goals.");
 	            }
 	        }
-
-	        if (!merged)
-			{
-	            // Create new group
-	            array_push(groups, {
-	                goal: current.goal,
-	                unmetSet: variable_clone(current.unmet)
-	            });
+        
+	        // If not merged by Strategy 1, or if it was processed, just add it.
+	        if (!mergedThisIteration && !processedIndices[i]) {
+	            array_push(combinedGroups, variable_clone(currentGroup));
+	            processedIndices[i] = true;
 	        }
 	    }
+	    groups = combinedGroups; // Update 'groups' for the next step
+	    show_debug_message($" Step 3: Strategically Combined Groups ({array_length(groups)}): {groups}");
 
-		// Combine all groups with zero unmet keys into one group
-	    var combinedZeroUnmetGoal = {};
-	    var newGroups = [];
-	    var hasZeroUnmet = false;
-
-	    //for (var i = 0; i < array_length(groups); i++)
-	    //{
-	    //    if (array_length(groups[i].unmetSet) == 0)
-	    //    {
-	    //        mergeStructs(combinedZeroUnmetGoal, groups[i].goal);
-	    //        hasZeroUnmet = true;
-	    //    }
-	    //    else
-	    //    {
-	    //        array_push(newGroups, groups[i]);
-	    //    }
-	    //}
 		
-		for (var i = 0; i < array_length(groups); i++)
-		{
-		    if (array_length(groups[i].unmetSet) == 0)
-		    {
-		        show_debug_message("Merging zero unmet goal: " + string(groups[i].goal));
-		        mergeStructs(combinedZeroUnmetGoal, groups[i].goal);
-		        hasZeroUnmet = true;
-		        show_debug_message("Current combined goal: " + string(combinedZeroUnmetGoal));
-		    }
-		    else
-		    {
+		// --- Step 3.5: Combine all groups with empty unmetSet into a single group ---
+		var combinedEmptyUnmetGoal = {};
+		var newGroups = [];
+		var emptyUnmetFound = false;
+
+		for (var i = 0; i < array_length(groups); i++) {
+		    if (array_length(groups[i].unmetSet) == 0) {
+		        // Merge goals from empty unmetSet groups
+		        deepMergeStructs(combinedEmptyUnmetGoal, groups[i].goal);
+		        emptyUnmetFound = true;
+		    } else {
+		        // Keep groups with unmet conditions as-is
 		        array_push(newGroups, groups[i]);
 		    }
 		}
 
-	    if (hasZeroUnmet)
-	    {
-	        array_push(newGroups, {
-	            goal: combinedZeroUnmetGoal,
-	            unmetSet: []
-	        });
-	    }
+		if (emptyUnmetFound) {
+		    array_push(newGroups, {
+		        goal: combinedEmptyUnmetGoal,
+		        unmetSet: [],
+		        category: "Other" // or pick appropriate category
+		    });
+		}
 
-		array_sort(groups, function(a, b)
-		{
-		    return array_length(a.unmetSet) - array_length(b.unmetSet);
-		});
+		groups = newGroups; // Replace old groups with new merged set
+
+		show_debug_message($" Step 3.5: Combined Empty Unmet Groups (Total Groups Now: {array_length(groups)})");
+
+		// --- Step 3.75: Merge all simple goals into one "main" goal group ---
+		//var complexGroups = [];
+		//var combinedSimpleGoal = {};
+		//var simpleFound = false;
+
+		//for (var i = 0; i < array_length(groups); i++) {
+		//    var group = groups[i];
+		//    var isSimple = false;
+
+		//    // Define your simplicity criteria:
+		//    if (array_length(group.unmetSet) <= 1 && array_length(struct_get_names(group.goal)) <= 1) {
+		//        isSimple = true;
+		//    }
+
+		//    // Or: also consider unmetSet empty (already satisfied)
+		//    if (array_length(group.unmetSet) == 0) {
+		//        isSimple = true;
+		//    }
+
+		//    if (isSimple) {
+		//        deepMergeStructs(combinedSimpleGoal, group.goal);
+		//        simpleFound = true;
+		//    } else {
+		//        array_push(complexGroups, group);
+		//    }
+		//}
+
+		//// Push merged simple goal group if found
+		//if (simpleFound) {
+		//    array_push(complexGroups, {
+		//        goal: combinedSimpleGoal,
+		//        unmetSet: getUnmetNonExplicitConditions(combinedSimpleGoal, _startState),
+		//        category: "Other" // Or keep most common category among merged ones
+		//    });
+		//}
+
+		//groups = complexGroups;
+		//show_debug_message($" Step 3.75: Merged simple goals. Total Groups Now: {array_length(groups)}");
+
+
+		// After Step 3.5, where empty-unmet groups have already been merged into a single one (if any)
+		//var emptyGroup = undefined;
+		//var newGroups = [];
+
+		//for (var i = 0; i < array_length(groups); i++) {
+		//    if (array_length(groups[i].unmetSet) == 0) {
+		//        emptyGroup = groups[i];
+		//    } else {
+		//        array_push(newGroups, groups[i]);
+		//    }
+		//}
+
+		//if (emptyGroup != undefined && array_length(newGroups) > 0) {
+		//    // Merge emptyGroup's goal into the first non-empty group
+		//    deepMergeStructs(newGroups[0].goal, emptyGroup.goal);
+		//    newGroups[0].category = "Other"; // Optional: flatten category if mixing goal types
+		//    show_debug_message(" Step 3.75: Merged simple goals. Total Groups Now: " + string(array_length(newGroups)));
+		//} else {
+		//    newGroups = groups; // No change needed
+		//}
+		//groups = newGroups;
+
+		// After Step 3.5 – assume `groups` is your current group list
+		var mergedGroups = [];
+		var singletonGoals = [];
+
+		for (var i = 0; i < array_length(groups); i++) {
+		    var goalKeys = struct_get_names(groups[i].goal);
+		    if (array_length(goalKeys) == 1) {
+		        // Consider this a singleton subgoal
+		        array_push(singletonGoals, groups[i]);
+		    } else {
+		        array_push(mergedGroups, groups[i]);
+		    }
+		}
+
+		// Merge each singleton goal into the first multi-goal group (or keep separate if none)
+		for (var i = 0; i < array_length(singletonGoals); i++) {
+		    var singleGroup = singletonGoals[i];
+
+		    // Prefer merging into the group with the fewest unmet keys (greedy heuristic)
+		    var bestIndex = -1;
+		    var minUnmet = 99999;
+
+		    for (var j = 0; j < array_length(mergedGroups); j++) {
+		        var unmetCount = array_length(mergedGroups[j].unmetSet);
+		        if (unmetCount < minUnmet) {
+		            minUnmet = unmetCount;
+		            bestIndex = j;
+		        }
+		    }
+
+		    if (bestIndex != -1) {
+		        deepMergeStructs(mergedGroups[bestIndex].goal, singleGroup.goal);
+		        mergedGroups[bestIndex].unmetSet = array_union(mergedGroups[bestIndex].unmetSet, singleGroup.unmetSet);
+		        mergedGroups[bestIndex].category = "Other"; // Optional: flatten category
+		    } else {
+		        // No other group to merge into, keep as its own
+		        array_push(mergedGroups, singleGroup);
+		    }
+		}
+
+		groups = mergedGroups;
+		show_debug_message(" Step 3.75: Merged singleton goals. Total Groups Now: " + string(array_length(groups)));
+
 		
-	    // Step 3: Flatten groups to just goals
-	    var result = [];
-	    for (var i = 0; i < array_length(groups); i++)
-	    {
-	        array_push(result, groups[i].goal);
-	    }
+		// Step 4: Dynamic Strategic Sorting of groups
+		// This sorting function determines the order in which subgoal groups are tackled.
+		array_sort(groups, function(a, b) {
+		    // Define a numeric priority for each category. Lower number means higher priority.
+		    var categoryPriority = {
+		        "AcquireBooleanTrue": 1,        // e.g., Get a weapon, build a generator (foundational)
+		        "CorrectBooleanFalse": 2,       // e.g., Repair weapon, maintain generator (state correction)
+		        "AchieveNumericalThreshold": 3, // e.g., Get enough ammo, food, energy (resource accumulation)
+		        "Other": 4                      // Catch-all for anything else
+		    };
 
-	    return result;
-	}
+		    var a_priority = categoryPriority[$ a.category];
+		    var b_priority = categoryPriority[$ b.category];
 
+		    // Priority 1: Category
+		    if (a_priority != b_priority) {
+		        return a_priority - b_priority;
+		    }
 
-	function buildFullPlanFromSubgoals(_startState, _subGoals)
-	{
-	    var currentState = (_startState);
-	    var fullPlan = [];
+		    // Priority 2: Unmet conditions count (fewer unmet is easier to achieve)
+		    var a_unmet_count = array_length(a.unmetSet);
+		    var b_unmet_count = array_length(b.unmetSet);
+		    if (a_unmet_count != b_unmet_count) {
+		        return a_unmet_count - b_unmet_count;
+		    }
+        
+		    // Priority 3: Goal complexity (fewer conditions in the group's goal)
+		    var a_goal_size = array_length(struct_get_names(a.goal));
+		    var b_goal_size = array_length(struct_get_names(b.goal));
+		    if (a_goal_size != b_goal_size) {
+		        return a_goal_size - b_goal_size;
+		    }
+
+		    return 0; // If all ties, maintain original order
+		});
     
-	    for (var i = 0; i < array_length(_subGoals); i++)
+		var finalGroups = groups; // The sorted 'groups' array is our final result
+
+		show_debug_message($" Final Groups ({array_length(finalGroups)}): {finalGroups}");
+    
+		return finalGroups;
+	}
+	
+	
+	
+	function planSubgoalGroupsSmart(currentState, subgoalGroups, _goalState)
+	{
+	    var fullPlan = [];
+	    var remaining = variable_clone(subgoalGroups);
+		var simState = variable_clone(currentState);
+    
+		var previousRemainingCount = array_length(remaining);
+		
+	
+	    while (array_length(remaining) > 0)
 	    {
-	        var subgoal = _subGoals[i];
-        
-	        // Run your planner with current state and current subgoal
-	        var partialPlan = findPlan(currentState, subgoal);
-        
-	        if (array_length(partialPlan) == 0)
-	        {
-	            show_debug_message("Failed to find plan for subgoal Group: " + string(i+1));
-	            return partialPlan; // Or handle failure as you see fit
-	        }
-			show_debug_message($"Partial Plan: {partialPlan}");
-			fullPlan = array_concat(fullPlan, partialPlan);
-        
-	        // Simulate partial plan reactions to update current state for next subgoal
-	        // Simulate effects of partial plan on currentState
 			
-	        for (var j = 0; j < array_length(partialPlan); j++)
+			
+			// First, prune any goals that are now met in the simulatedCurrentState
+		    var stillRemaining = [];
+		    for (var i = 0; i < array_length(remaining); i++) {
+		        if (!state_meets_goal(simState, remaining[i].goal)) {
+		            array_push(stillRemaining, remaining[i]);
+		        } else {
+		            show_debug_message($"Goal group already met, removing from remaining: {string(remaining[i].goal)}");
+		        }
+		    }
+		    remaining = stillRemaining; // Update the array
+
+		    if (array_length(remaining) == 0)
+			{ // All goals met, exit loop
+		        break;
+		    }
+
+		    // --- Check for Stagnation ---
+		    if (array_length(remaining) > previousRemainingCount) {
+		        show_debug_message("Stuck: No progress made on remaining goals in the last iteration. Returning partial plan.");
+		        return fullPlan; // Return the plan accumulated so far
+		    }
+		    previousRemainingCount = array_length(remaining);
+			
+			
+			
+	        var plannedThisIteration = false;
+        
+	        for (var i = 0; i < array_length(remaining); i++)
 	        {
-	            var actionName = partialPlan[j];
-	            var action = allActions[$ actionName];
-				currentState = simulateReactions(currentState, action.reactions);
-	            
+	            var group = remaining[i];
+	            if (state_meets_goal(simState, group.goal))
+	            {
+	                array_delete(remaining, i, 1);
+	                i--;
+	                continue;
+	            }
+            
+	            var plan = findPlan(simState, group.goal);
+	            if (array_length(plan) > 0)
+	            {
+	                simState = applyPlanToState(simState, plan);
+	                fullPlan = array_concat(fullPlan, plan);
+	                array_delete(remaining, i, 1);
+	                i--;
+	                plannedThisIteration = true;
+	            }
 	        }
+        
+	        if (!plannedThisIteration)
+	        {
+	            // Combine all remaining subgoal goals into one goal struct
+				var combinedGoal = {};
+				for (var i = 0; i < array_length(remaining); i++) {
+				    deepMergeStructs(combinedGoal, remaining[i].goal);
+				}
+				
+				show_debug_message($"combinedGoal: {combinedGoal}")
+				show_debug_message($"simState: {simState}")
+
+				var combinedPlan = findPlan(simState, combinedGoal);
+				if (array_length(combinedPlan) > 0) {
+				    simState = applyPlanToState(simState, combinedPlan);
+				    fullPlan = array_concat(fullPlan, combinedPlan);
+				    remaining = [];
+				} else {
+				    show_debug_message("Failed to plan combined remaining subgoals. Returning partial plan.");
+				    break;
+				}
+
+	        }
+	    }
+    
+	    // Final smoothing: plan any leftover gaps to reach full goal
+	    if (!state_meets_goal(simState, _goalState))
+	    {
+	        show_debug_message("Smoothing remaining unmet goal conditions...");
+			
+	        var smoothingPlan = findPlan(simState, _goalState);
+	        simState = applyPlanToState(simState, smoothingPlan);
+	        fullPlan = array_concat(fullPlan, smoothingPlan);
+
+	        if (state_meets_goal(simState, _goalState))
+	            show_debug_message("Final smoothed plan meets the goal.");
+	        else
+	            show_debug_message("Warning: Final smoothed plan still does not meet the goal.");
+				
+			show_debug_message($"Current Sim State: {simState}");
+	    }
+	    else
+	    {
+	        show_debug_message("Final plan meets the goal without smoothing.");
 	    }
     
 	    return fullPlan;
 	}
 
 	
-	
-	// Creating the plan the CORE of GOAP.
 
+
+	function applyPlanToState(state, plan)
+	{
+	    var sim = variable_clone(state);
+	    for (var i = 0; i < array_length(plan); i++) {
+	        sim = simulateReactions(sim, allActions[$ plan[i]].reactions);
+	    }
+	    return sim;
+	}
+
+
+	// if you feed a large goal into this it will take a long ass time
+	// Creating the plan the CORE of GOAP.
 	function findPlan(_startState, _goalState)
 	{
 		
@@ -2343,7 +2497,7 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 		
 		//show_debug_message($"Target GOAL: {targetGoal}");
 		
-		show_debug_message($"Goal State: {_goalState}");
+		//show_debug_message($"Goal State: {_goalState}");
 		//show_debug_message($"Start State: {_startState}");
 		
 		
@@ -2565,7 +2719,7 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 				#endregion
 				
 				//show_debug_message($"Action Made it: {_actName}");
-				//show_debug_message($"[{current_time-_startMS} ms] Expanding ({_expanded}): g={_newNode.gCost}, h={_newNode.hCost}, f={_newNode.fCost}");
+				//show_debug_message($"[{current_time-_startMS} ms] Expanding ({nodeData.expanded}): g={_newNode.gCost}, h={_newNode.hCost}, f={_newNode.fCost}");
 				//show_debug_message("--------------------------------------------------");
 				
 			}
@@ -2615,24 +2769,24 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 			return cached_plan; // Return the cached plan immediately
 		}
 		
-		var _subGoals = buildSubGoals(_startState, _goalState);
+		var _subMS = current_time;
 		
-		show_debug_message($"Sub Goal Groups: {_subGoals}");
-		
-		var _subPlan = buildFullPlanFromSubgoals(_startState, _subGoals);
-		
-		show_debug_message($"Sub Goal Plan: {_subPlan}");
-		
-		//var _finalPlan = findPlan(_startState, _goalState);
+		show_debug_message($"Goal State: {_goalState}");
+		show_debug_message($"Start State: {_startState}");
 		
 		
+		//var _subGoals = buildSubGoals(_startState, _goalState);
+		//show_debug_message($"Sub Goals: {_subGoals}");
+		//var _subPlan = planSubgoalGroupsSmart(_startState, _subGoals, _goalState);
+
+		//show_debug_message($"Sub Goal Plan ({array_length(_subPlan)}) in ({current_time - _subMS}) ms: {_subPlan}");
 		
-		var _finalPlan = planLog.doProfile("_finalPlan", findPlan, [_startState, _goalState]);
-		//show_debug_message($"Full Goal Plan: {_finalPlan}");
 		
+		var _stMS = current_time; 
+		var _entirePlan = findPlan(_startState, _goalState);
+		show_debug_message($"Full Plan ({current_time - _stMS} ms)({array_length(_entirePlan)}): {_entirePlan}");
 		
-		
-		return _finalPlan;	//	return a array with names of the actions as strings
+		return _entirePlan;	//	return a array with names of the actions as strings
 	}
 
 	
