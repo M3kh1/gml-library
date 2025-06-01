@@ -117,20 +117,39 @@ function deepMergeStructs(a, b)
 
 #endregion
 
-function brainGOAP() constructor
+function brainGOAP(_ownerObj=other.id) constructor
 {
 	actions = {};
 	goals = {};
 	sensors = {};
 	
+	ownerObj = _ownerObj;
+	target = undefined;
+	
+	show_debug_message($"Owner OBJ: {ownerObj}");
 	targetGoal = undefined;
 	
-	Log = new Logger("GOAP/Brain", true, [LogLevel.debug, LogLevel.warning]);
+	Log = new Logger("GOAP/Brain", true, [LogLevel.debug]);
 	
 	planner = new plannerGOAP(actions, targetGoal); 
 	plan = [];
 	currentActionIndex = 0;  // init action index
+	currentActionState = {
+	    started: false,
+	    startSnapshot: undefined,
+	    // other per-action state if needed
+	}
 	
+	
+	resetActionState = function()
+	{
+		currentActionState = {
+	        started: false,
+	        startSnapshot: undefined,
+	    };
+	}
+	
+
 	
 	
 	#region		- Primary User Functions -
@@ -221,7 +240,13 @@ function brainGOAP() constructor
 			return;
 		}
 		
-		targetGoal = struct_get(goals, _goalName);
+		var _tempGoal = struct_get(goals, _goalName);
+		if targetGoal != _tempGoal
+		{
+			targetGoal = _tempGoal;
+		} else {
+			Log.logWarning("Trying to set a goal thats alrdy chosen.");
+		}
 		
 	}
 	
@@ -345,7 +370,7 @@ function brainGOAP() constructor
 	
 	#region		<Run the Plan>
 	
-	LogPlanExe = new Logger("GOAP/Brain/Plan-Executor", true, [LogLevel.debug, LogLevel.info, LogLevel.warning]);
+	LogPlanExe = new Logger("GOAP/Brain/Plan-Executor", false, [LogLevel.info, LogLevel.warning]);
 	
 	checkReactionDelta = function(startState, endState, expectedChanges)
 	{
@@ -382,7 +407,6 @@ function brainGOAP() constructor
 	
 	goalComplete = function()
 	{
-	    //show_debug_message("[GOAP] Goal complete!");
 		LogPlanExe.logInfo($"Plan Completed For Goal: {targetGoal.name}");
 	    generatePlan();
 	}
@@ -404,11 +428,13 @@ function brainGOAP() constructor
 	hasReachedTarget = function(target)
 	{
 	    var target_x, target_y;
-		var tolerance = 0;
-
+		var tolerance = 1;
+		
 	    // Handle both object and position input
 	    if (instance_exists(target))
 	    {
+			//target = instance_nearest(ownerObj.x, ownerObj.y, target);
+			
 	        target_x = target.x;
 	        target_y = target.y;
 	    }
@@ -423,17 +449,18 @@ function brainGOAP() constructor
 	        return true;
 	    }
 
-	    var dist = point_distance(x, y, target_x, target_y);
+	    var dist = point_distance(ownerObj.x, ownerObj.y, target_x, target_y);
 	    return (dist <= tolerance); // Adjust tolerance as needed
 	}
 
 	
-	moveTowardTarget = function(target, spd = 2)
+	moveTowardTarget = function(target, spd = 1)
 	{
 	    var target_x, target_y;
 
 	    if (instance_exists(target))
 	    {
+			//target = instance_nearest(ownerObj.x, ownerObj.y, target);
 	        target_x = target.x;
 	        target_y = target.y;
 	    }
@@ -448,109 +475,150 @@ function brainGOAP() constructor
 	        return;
 	    }
 
-	    var angle = point_direction(x, y, target_x, target_y);
-	    x += lengthdir_x(spd, angle);
-	    y += lengthdir_y(spd, angle);
+	    var angle = point_direction(ownerObj.x, ownerObj.y, target_x, target_y);
+	    ownerObj.x += lengthdir_x(spd, angle);
+	    ownerObj.y += lengthdir_y(spd, angle);
 	}
 
-
+	selectGoal = function()
+	{
+		
+		var _goals = structToArray(goals);
+		var _highestUrgency = -infinity;
+		var _bestGoal = undefined;
+		
+		for(var i=0; i<array_length(_goals); i++)
+		{
+			var _goal = _goals[i];
+			var _currState = captureSensorSnapshot();
+			var _targetState = _goal.conditions;
+			var _goalPriority = _goal.priority;
+			
+			var _urgency = (planner.simpleHeuristic(_currState, _targetState) * _goalPriority);
+			
+			if _urgency > _highestUrgency
+			{
+				_highestUrgency = _urgency; // Update the highest urgency found so far
+				_bestGoal = _goal; // Store this goal as the current "best" candidate
+			}
+			
+		}
+		
+		var minimumActivationUrgency = 1; // Or 0, depending on your urgency scale.
+	    if (_highestUrgency > minimumActivationUrgency) and (_bestGoal != undefined) 
+		{
+	        //show_debug_message($"Found best goal: {_bestGoal.name} with urgency: {_highestUrgency}");
+	        setTargetGoal(_bestGoal.name);
+	    } else {
+	        //show_debug_message("No goal found with sufficient urgency. AI may go idle.");
+			setTargetGoal("");
+	        
+	    }
+		
+	}
+	
+	
+	
 	doPlan = function()
 	{
-	    // 1. Is the Goal Already Achieved?
+	    selectGoal();
+
+	    if (targetGoal == undefined)
+	        return;
+
 	    if (planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
 	    {
-			LogPlanExe.logInfo($"Target Goal: {targetGoal.name} Already Completed.");
-	        return; // No plan needed
+	        LogPlanExe.logDebug($"Target Goal: {targetGoal.name} already completed.");
+	        return;
 	    }
 
-	    // 2. Is There a Valid Plan?
 	    if (plan == undefined || array_length(plan) == 0)
 	    {
-			LogPlanExe.logWarning("Plan isnt valid.");
+	        LogPlanExe.logWarning("Plan isn't valid.");
 	        generatePlan();
 	        return;
 	    }
 
-	    // 3. Are we done with the plan?
 	    if (currentActionIndex >= array_length(plan))
 	    {
-	        goalComplete(); // Plan success
+	        goalComplete();
 	        return;
 	    }
 
-	    // 4. Get the Current Action
-	    var _actionName = plan[currentActionIndex];
-
-	    if (!struct_exists(actions, _actionName))
+	    var actionName = plan[currentActionIndex];
+	    if (!struct_exists(actions, actionName))
 	    {
-			LogPlanExe.logWarning($"Action '{_actionName}' does not exist.");
-	        handleFailure(); // Exit or replan
+	        LogPlanExe.logWarning($"Action '{actionName}' does not exist.");
+	        handleFailure();
 	        return;
 	    }
 
-	    var _action = actions[$ _actionName];
+	    var action = actions[$ actionName];
 
-	    // 5. Preconditions must hold
-	    if (!planner.checkKeysMatch(_action.conditions, captureSensorSnapshot()))
+	    // Handle action execution state:
+	    if (!currentActionState.started)
 	    {
-			
-			LogPlanExe.logDebug($"Preconditions failed for '{_actionName}'. ({currentActionIndex+1}) Replanning...");
-			LogPlanExe.logDebug($"_action.conditions: {_action.conditions}");
-			LogPlanExe.logDebug($"captureSensorSnapshot(): {captureSensorSnapshot()}");
-	        generatePlan();
-	        return;
-	    }
-
-
-		// 6. Target: handle MoveBeforePerforming gate
-	    if (_action.targetMode == actionTargetMode.MoveBeforePerforming)
-	    {
-	        if (!hasReachedTarget(_action.target))
+	        // Check preconditions once before starting
+	        if (!planner.checkKeysMatch(action.conditions, captureSensorSnapshot()))
 	        {
-	            moveTowardTarget(_action.target);
-	            return; // Don't execute until we arrive
+	            LogPlanExe.logDebug($"Preconditions failed for '{actionName}' (before start). Replanning...");
+	            generatePlan();
+	            return;
 	        }
+
+	        // If action needs movement before performing:
+	        if (action.targetMode == actionTargetMode.MoveBeforePerforming)
+	        {
+	            if (!hasReachedTarget(action.target))
+	            {
+	                moveTowardTarget(action.target);
+	                return;
+	            }
+	        }
+
+	        // If action executes while moving
+	        if (action.targetMode == actionTargetMode.PerformWhileMoving)
+	        {
+	            moveTowardTarget(action.target);
+	        }
+
+	        // Mark action started
+	        currentActionState.started = true;
+	        currentActionState.startSnapshot = captureSensorSnapshot();
+
+	        // Call action's execute function
+	        action.execute();
+
+	        return; // wait for next frame to check progress
 	    }
-	    else if (_action.targetMode == actionTargetMode.PerformWhileMoving)
+	    else
 	    {
-	        moveTowardTarget(_action.target);
+	        // Action is running - check for success by comparing reactions
+	        if (checkReactionDelta(currentActionState.startSnapshot, captureSensorSnapshot(), action.reactions))
+	        {
+	            LogPlanExe.logInfo($"{actionName} completed.");
+	            // Reset action state and move to next action
+				resetActionState();
+				
+	            currentActionIndex++;
+	            return;
+	        }
+
+	        // Check for interruption
+	        if (action.isInterruptible && !planner.checkKeysMatch(action.conditions, captureSensorSnapshot()))
+	        {
+	            LogPlanExe.logInfo($"{actionName} was interrupted.");
+	            // Reset and replan
+	            resetActionState();
+	            handleInterruption();
+	            return;
+	        }
+
+	        // Still running, wait for next frame
+	        return;
 	    }
-
-	    // 6. If action hasn't started, take snapshot
-	    _action.startSnapshot = captureSensorSnapshot();
-	    
-		
-
-	    // 7. Execute the action 
-		_action.execute();
-		
-
-		// 8. Check for completion first
-		if (checkReactionDelta(_action.startSnapshot, captureSensorSnapshot(), _action.reactions))
-		{
-			LogPlanExe.logInfo($"[GOAP] '{_actionName}' completed.");
-		    currentActionIndex++;
-
-		    // Optional: clear snapshot so action resets if reused
-		    _action.startSnapshot = undefined;
-
-		    if (currentActionIndex >= array_length(plan))
-		    {
-		        goalComplete();
-		    }
-
-		    return; // Exit early so no interruption is falsely detected
-		}
-
-		// 9. Then check for interruption
-		if (_action.isInterruptible && !planner.checkKeysMatch(_action.conditions, captureSensorSnapshot()))
-		{
-			LogPlanExe.logInfo($"[GOAP] '{_actionName}' was interrupted.");
-		    handleInterruption();
-		    return;
-		}
-
 	}
+	
 
 
 	#endregion
@@ -613,8 +681,8 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 			conditionGraph = _graphs.con;
 			reactionGraph = _graphs.react;
 			
-			show_debug_message($"Condition Graph:\n {conditionGraph}");
-			show_debug_message($"Reaction Graph:\n {reactionGraph}");
+			//show_debug_message($"Condition Graph:\n {conditionGraph}");
+			//show_debug_message($"Reaction Graph:\n {reactionGraph}");
 			
 			actionCostData = calculateMinActionCostsHeuristicData();
 		}
@@ -624,7 +692,20 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	
 	#region		--- Heuristic Functions ---
 	
+	
+	function simpleHeuristic(_state, _goal)
+	{
+        var error = 0;
+        var keys = struct_get_names(_goal);
+        for (var i = 0; i < array_length(keys); i++)
+		{
+            var key = keys[i];
+            if (!keyMatches(_state, _goal, key)) error++;
 
+        }
+        return error;
+    }
+	
 	function goalHeuristic(_currentState, _goalState, _unmet)
 	{
 		var _startMS = current_time;
@@ -1834,7 +1915,8 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 			array_insert(plan, 0, _node.action); // insert action at beginning
 			_node = _node.parent;
 		}
-		return array_reverse(plan);
+		return plan;
+		//return array_reverse(plan);
 	}
 
 	
@@ -2756,7 +2838,7 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	createPlan = function(_startState, _goalState)
 	{
 		
-		show_debug_message($"Creating Plan started...");
+		//show_debug_message($"Creating Plan started...");
 		
 	    setupActionData(); // find a better place to put this ltr.
 
@@ -2771,8 +2853,8 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 		
 		var _subMS = current_time;
 		
-		show_debug_message($"Goal State: {_goalState}");
-		show_debug_message($"Start State: {_startState}");
+		//show_debug_message($"Goal State: {_goalState}");
+		//show_debug_message($"Start State: {_startState}");
 		
 		
 		//var _subGoals = buildSubGoals(_startState, _goalState);
@@ -2792,7 +2874,6 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	
 	
 }
-
 
 
 #region Node Stuff
@@ -2843,14 +2924,6 @@ function nodeGOAP(_name) constructor
 }
 
 
-enum actionStatus
-{
-	idle,
-	running,
-	success,
-	failure,
-}
-
 enum actionTargetMode
 {
 	none,
@@ -2868,8 +2941,6 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 	
 	target = undefined;
 	targetMode = actionTargetMode.none;
-	
-	status = actionStatus.idle; //idle, running, success, failure
 	
 	executeFunction = undefined;
 	
@@ -2893,15 +2964,29 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
         executeFunction = _func;  // Set the function that executes the action
     }
 	
-	
-	setTarget = function(_target, _mode=actionTargetMode.MoveBeforePerforming)
+	setTarget = function(_target, _conditionFn=undefined, _mode=actionTargetMode.MoveBeforePerforming)
 	{
-		target = _target;
-		targetMode = _mode;
+		
+		// If a condition function is provided, check target validity
+	    if (_conditionFn != undefined)
+	    {
+	        if (!_conditionFn(_target))
+	        {
+	            show_debug_message("Target rejected by condition function.");
+	            target = noone;
+	            return false; // or handle as you prefer
+	        }
+	    }
+
+	    target = instance_nearest(x,y,_target);
+	    targetMode = _mode;
+	    return true;
+		
+		//target = _target;
+		//targetMode = _mode;
 	}
 	
-	
-    
+	// leave ts off/false
 	canBeInterrupted = function(_val)
 	{
 		isInterruptible = _val;
@@ -2919,18 +3004,12 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
         
     }
 	
-	
-	isRunning = function()
-	{
-		return (status == actionStatus.running);
-	}
-	
 }
 
 
-function goalGOAP(_name) : nodeGOAP(_name) constructor
+function goalGOAP(_name, _priority=1) : nodeGOAP(_name) constructor
 {
-	
+	priority = _priority;
 	
 	
 }
