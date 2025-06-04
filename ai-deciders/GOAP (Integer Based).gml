@@ -22,6 +22,8 @@
 
 randomize();
 
+
+
 #region		<Global Helpers>
 
 function structToArray(_struct)
@@ -38,7 +40,7 @@ function structToArray(_struct)
 	return _finalArray;
 		
 }
-	
+
 
 function hashState(_state)
 {
@@ -116,6 +118,8 @@ function deepMergeStructs(a, b)
 
 
 #endregion
+
+
 
 function brainGOAP(_ownerObj=other.id) constructor
 {
@@ -424,6 +428,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 	    generatePlan();
 	}
 	
+    
 	
 	hasReachedTarget = function(target)
 	{
@@ -597,6 +602,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 	        if (checkReactionDelta(currentActionState.startSnapshot, captureSensorSnapshot(), action.reactions))
 	        {
 	            LogPlanExe.logInfo($"{actionName} completed.");
+                
 	            // Reset action state and move to next action
 				resetActionState();
 				
@@ -608,6 +614,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 	        if (action.isInterruptible && !planner.checkKeysMatch(action.conditions, captureSensorSnapshot()))
 	        {
 	            LogPlanExe.logInfo($"{actionName} was interrupted.");
+                
 	            // Reset and replan
 	            resetActionState();
 	            handleInterruption();
@@ -626,6 +633,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 	
 
 }
+
 
 
 function plannerGOAP(_allActions, _targetGoal) constructor
@@ -872,78 +880,52 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 		}
 	}
 
-	
-	function getConditionGap(_state_value, _target_condition_value, _key_name = "unknown_key")
+	function getConditionGap(_state_value, _target_condition_struct, _key_name = "unknown_key")
 	{
-	    var _avg_cost = averageActionCost; // Still a useful fallback
-		var _minCostPerKey = actionCostData.MinCostPerKey;
-		var _minCostToAchieve = actionCostData.MinCostToAchieve;
-		
-	    // --- Handle Numerical Conditions (e.g., Ammo >= 100) ---
-	    if (is_struct(_target_condition_value)) // Indicates a numerical comparison (e.g., {comparison:">=", value:10})
+	    var _avg_cost = averageActionCost;
+	    var _minCostPerKey = actionCostData.MinCostPerKey;
+	    var _minCostToAchieve = actionCostData.MinCostToAchieve;
+
+	    if (!is_struct(_target_condition_struct) || !struct_exists(_target_condition_struct, "comparison"))
 	    {
-	        var operator = _target_condition_value.comparison;
-	        var target_numeric_value = _target_condition_value.value;
-
-	        if (!is_numeric(_state_value))
-	        {
-	            // If the current state value isn't numeric but the goal expects a numeric comparison,
-	            // it's an impossible gap for this path (or a very high cost).
-	            return infinity;
-	        }
-
-	        // Use global.GOAP_MinCostPerUnit_Data for numerical quantities
-	        var cost_per_unit = _avg_cost; // Default fallback
-	        if (struct_exists(_minCostPerKey, _key_name))
-	        {
-	            cost_per_unit = _minCostPerKey[$ _key_name];
-	        }
-	        if (cost_per_unit <= 0) 
-			{
-				//show_debug_message("Using avg. cost");
-				cost_per_unit = _avg_cost; // Defensive: ensure non-zero/positive cost
-			}
-
-	        switch (operator)
-	        {
-	            case ">=":
-	                var needed = max(0, target_numeric_value - _state_value);
-	                return needed * cost_per_unit;
-
-	            case "<=":
-	                var excess = max(0, _state_value - target_numeric_value);
-	                return excess * cost_per_unit;
-
-	            case ">":
-	                return max(0, (target_numeric_value - _state_value) + 1) * cost_per_unit;
-
-	            case "<":
-	                return max(0, (_state_value - target_numeric_value) + 1) * cost_per_unit;
-
-	            case "=":
-	                return (_state_value == target_numeric_value) ? 0 : abs(_state_value - target_numeric_value) * cost_per_unit;
-
-	            default:
-	                planLog.logWarning($"getConditionGap: Unknown comparison operator '{operator}' for key '{_key_name}'.");
-	                return 999999999;
-	        }
+	        planLog.logWarning($"getConditionGap: Target condition for '{_key_name}' is not a valid struct.");
+	        return 999999999;
 	    }
-	    // --- Handle Simple Boolean/Value Conditions (e.g., HasWeapon: true, Location: "Town") ---
-	    else // target_condition_value is a direct value (e.g., true/false, "item_name", 0/1)
-	    {
-	        var target_simple_value = _target_condition_value;
 
-	        if (_state_value == target_simple_value)
-	        {
-	            return 0; // Condition already met
-	        }
-	        else
-	        {
-	            var min_cost_for_value = _avg_cost; // Fallback to average cost
-				
-	            var target_value_str = string(target_simple_value); // Convert to string for lookup
-				//show_debug_message($"AVG COST: {min_cost_for_value}");
-				
+	    var operator = _target_condition_struct.comparison;
+	    var target_value = _target_condition_struct.value;
+
+	    // Determine unit cost for numeric comparisons
+	    var cost_per_unit = _avg_cost;
+	    if (struct_exists(_minCostPerKey, _key_name))
+	    {
+	        cost_per_unit = max(_minCostPerKey[$ _key_name], 0.01); // Prevent zero cost
+	    }
+
+	    switch (operator)
+	    {
+	        case ">=":
+	            return max(0, target_value - _state_value) * cost_per_unit;
+
+	        case "<=":
+	            return max(0, _state_value - target_value) * cost_per_unit;
+
+	        case ">":
+	            return max(0, (target_value - _state_value) + 1) * cost_per_unit;
+
+	        case "<":
+	            return max(0, (_state_value - target_value) + 1) * cost_per_unit;
+
+	        case "==":
+	            if (_state_value == target_value)
+	            {
+	                return 0;
+	            }
+
+	            // For direct values (like bools), use precomputed cost
+	            var min_cost_for_value = _avg_cost;
+	            var target_value_str = string(target_value);
+
 	            if (struct_exists(_minCostToAchieve, _key_name))
 	            {
 	                if (struct_exists(_minCostToAchieve[$ _key_name], target_value_str))
@@ -951,14 +933,15 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	                    min_cost_for_value = _minCostToAchieve[$ _key_name][$target_value_str];
 	                }
 	            }
-				
-				//show_debug_message($"AVG COST: {min_cost_for_value}");
-				
+
 	            return min_cost_for_value;
-	        }
+
+	        default:
+	            planLog.logWarning($"getConditionGap: Unknown comparison operator '{operator}' for key '{_key_name}'.");
+	            return 999999999;
 	    }
 	}
-	
+
 	
 	#endregion
 	
@@ -1008,74 +991,61 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	    var condition_definition = _target_struct[$ _key_to_check]; // Get the condition definition from the target struct (either goal or action conditions)
 
 
-	    // --- Handle Numerical Conditions (Condition definition is a struct with comparison and value) ---
-	    if (is_struct(condition_definition))
+	    var operator = condition_definition.comparison;
+	    var target_value = condition_definition.value;
+
+	    // Ensure both state value and target value are numeric for numerical comparison
+	    if (!is_numeric(state_value) || !is_numeric(target_value))
 	    {
-	        var operator = condition_definition.comparison;
-	        var target_value = condition_definition.value;
-
-	        // Ensure both state value and target value are numeric for numerical comparison
-	        if (!is_numeric(state_value) || !is_numeric(target_value))
-	        {
-	            // If either isn't numeric, the condition can't be numerically matched.
-	            planLog.logWarning($"keyMatches: Numerical comparison for key '{_key_to_check}' requires numeric values. State is '{string(state_value)}', Target is '{string(target_value)}'.");
-	            return false;
-	        }
-
-	        var result = false; // Initialize the boolean result for the comparison
-
-	        // Perform the numerical comparison based on the operator string
-	        switch (operator)
-	        {
-	            case ">=": result = state_value >= target_value; break;
-	            case "<=": result = state_value <= target_value; break;
-	            case ">":  result = state_value > target_value; break;
-	            case "<":  result = state_value < target_value; break;
-	            case "=":  result = state_value == target_value; break;
-
-	            default:
-	                planLog.logWarning($"keyMatches: Unknown comparison operator '{operator}' for key '{_key_to_check}'.");
-	                return false; // An unknown operator means the condition is not met
-	        }
-			
-			if (!result)
-			{
-				//show_debug_message("keyMatches: Numeric condition failed for key '" + string(_key_to_check) + "'. State: " + string(state_value) + " " + string(operator) + " " + string(target_value));
-			}
-			
-	        return result; // Return the actual boolean result of the numerical comparison
+	        // If either isn't numeric, the condition can't be numerically matched.
+	        planLog.logWarning($"keyMatches: Numerical comparison for key '{_key_to_check}' requires numeric values. State is '{string(state_value)}', Target is '{string(target_value)}'.");
+	        return false;
 	    }
-	    // --- Handle Simple Boolean/Value Conditions (Condition definition is a direct value) ---
-	    else
+
+	    var result = false; // Initialize the boolean result for the comparison
+
+	    // Perform the numerical comparison based on the operator string
+	    switch (operator)
 	    {
-	        var condition_value = condition_definition;
+	        case ">=": result = state_value >= target_value; break;
+	        case "<=": result = state_value <= target_value; break;
+	        case ">":  result = state_value > target_value; break;
+	        case "<":  result = state_value < target_value; break;
+	        case "==":  result = state_value == target_value; break;
 
-	        // For simple conditions, the state value must exactly match the condition value.
-	        // We already checked if the key exists in the state.
-	        return state_value == condition_value;
+	        default:
+	            planLog.logWarning($"keyMatches: Unknown comparison operator '{operator}' for key '{_key_to_check}'.");
+	            return false; // An unknown operator means the condition is not met
 	    }
+			
+		if (!result)
+		{
+			//show_debug_message("keyMatches: Numeric condition failed for key '" + string(_key_to_check) + "'. State: " + string(state_value) + " " + string(operator) + " " + string(target_value));
+		}
+			
+	    return result; // Return the actual boolean result of the numerical comparison
+	    
 	}
 	
 	
 	function keyMatchesValue(actual, expected)
 	{
-	    // If expected is a struct, interpret it as a comparison requirement
-	    if (is_struct(expected))
+	    
+	    if (!struct_exists(expected, "comparison") || !struct_exists(expected, "value")) return false;
+
+	    var comp = expected.comparison;
+	    var val = expected.value;
+
+	    switch (comp)
 		{
-	        if (!struct_exists(expected, "comparison") || !struct_exists(expected, "value")) return false;
-
-	        var comp = expected.comparison;
-	        var val = expected.value;
-
-	        switch (comp) {
-	            case "==": return actual == val;
-	            case "<":  return actual < val;
-	            case "<=": return actual <= val;
-	            case ">":  return actual > val;
-	            case ">=": return actual >= val;
-	            default: return false;
-	        }
+	        case "==": return actual == val;
+	        case "<":  return actual < val;
+	        case "<=": return actual <= val;
+	        case ">":  return actual > val;
+	        case ">=": return actual >= val;
+	        default: return false;
 	    }
+	    
 
 	    // Otherwise, just compare directly
 	    return actual == expected;
@@ -1218,18 +1188,21 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 	    var queue = [];
 
 	    var goalKeys = struct_get_names(_goalState);
-	    for (var i = 0; i < array_length(goalKeys); i++) {
+	    for (var i = 0; i < array_length(goalKeys); i++)
+        {
 	        var key = goalKeys[i];
 	        reachable[$ key] = true;
 	        array_push(queue, key);
 	    }
 
-	    while (array_length(queue) > 0) {
+	    while (array_length(queue) > 0)
+        {
 	        var key = array_shift(queue);
 	        var producers = conditionGraph[$ key];
 	        if (producers == undefined) continue;
 
-	        for (var i = 0; i < array_length(producers); i++) {
+	        for (var i = 0; i < array_length(producers); i++)
+            {
 	            var actionName = producers[i];
 	            var action = allActions[$ actionName];
 	            if (action == undefined || action.conditions == undefined) continue;
@@ -1592,38 +1565,24 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 
 	            var _goalDefinition = _goalState[$ _unmetKey];
 
-	            // Numerical goal
-	            if (is_struct(_goalDefinition) && is_numeric(_reactionValue))
-	            {
-	                var _operator = _goalDefinition.comparison;
-	                var _targetValue = _goalDefinition.value;
-	                var _currentValue = struct_exists(_currentState, _unmetKey) ? _currentState[$ _unmetKey] : 0;
-	                var _newValue = _currentValue + _reactionValue;
+	            
+	            var _operator = _goalDefinition.comparison;
+	            var _targetValue = _goalDefinition.value;
+                    
+	            var _currentValue = struct_exists(_currentState, _unmetKey) ? _currentState[$ _unmetKey] : 0;
+	            var _newValue = _currentValue + _reactionValue;
 
-	                switch (_operator)
-	                {
-	                    case ">=": if (_reactionValue < 0) _hasUndesirableEffect = true; break;
-	                    case "<=": if (_reactionValue > 0) _hasUndesirableEffect = true; break;
-	                    case ">":  if (_reactionValue <= 0) _hasUndesirableEffect = true; break;
-	                    case "<":  if (_reactionValue >= 0) _hasUndesirableEffect = true; break;
-	                    case "=":
-	                        if (_reactionValue != 0 &&
-	                            ((_currentValue == _targetValue && _newValue != _targetValue) ||
-	                            (abs(_newValue - _targetValue) > abs(_currentValue - _targetValue))))
-	                        {
-	                            _hasUndesirableEffect = true;
-	                        }
-	                        break;
-	                }
-	            }
-	            // Direct value (boolean or enum)
-	            else
+	            switch (_operator)
 	            {
-	                if (_goalDefinition != _reactionValue)
-	                {
-	                    _hasUndesirableEffect = true;
-	                }
+	                case ">=": if (_reactionValue < 0) _hasUndesirableEffect = true; break;
+	                case "<=": if (_reactionValue > 0) _hasUndesirableEffect = true; break;
+	                case ">":  if (_reactionValue <= 0) _hasUndesirableEffect = true; break;
+	                case "<":  if (_reactionValue >= 0) _hasUndesirableEffect = true; break;
+	                case "==": if (_goalDefinition == _reactionValue) _hasUndesirableEffect = true; break;
+							
 	            }
+	            
+	           
 
 	            if (_hasUndesirableEffect) break;
 	        }
@@ -2876,9 +2835,10 @@ function plannerGOAP(_allActions, _targetGoal) constructor
 }
 
 
+
 #region Node Stuff
 
-
+///@desc Building block for the Goals & Actions of GOAP
 function nodeGOAP(_name) constructor
 {
 	//uuid = "node_"//+generateUUID(8);
@@ -2903,18 +2863,20 @@ function nodeGOAP(_name) constructor
 		
 	}
 	
-	addSimpleCondition = function(_name, _val)
-	{
-		if (struct_exists(conditions, _name))
-		{
-			if showDebug show_debug_message($"Condition ({_name}) Exists Already.");
-			return;
-		}
+    // convert all switch statements that dont use {comparison: _comp , value: _val} so the 
+    // addEualToCondition can be the simple condition
+	//addSimpleCondition = function(_name, _val)
+	//{
+	//	if (struct_exists(conditions, _name))
+	//	{
+	//		if showDebug show_debug_message($"Condition ({_name}) Exists Already.");
+	//		return;
+	//	}
 		
-		struct_set(conditions, _name, _val);
-	}
+	//	struct_set(conditions, _name, _val);
+	//}
 	
-	addEualToCondition = function(_name, _val) { addCondition(_name, "=", _val); }
+	addSimpleCondition = function(_name, _val) { addCondition(_name, "==", _val); }
 	addGreaterThanCondition = function(_name, _val) { addCondition(_name, ">", _val); }
 	addGreaterThanOrEqualToCondition = function(_name, _val) { addCondition(_name, ">=", _val); }
 	addLessThanCondition = function(_name, _val) { addCondition(_name, "<", _val); }
@@ -2930,7 +2892,6 @@ enum actionTargetMode
 	MoveBeforePerforming,
 	PerformWhileMoving,
 }
-
 
 
 function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
@@ -2970,16 +2931,20 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 		// If a condition function is provided, check target validity
 	    if (_conditionFn != undefined)
 	    {
-	        if (!_conditionFn(_target))
+			
+	        if (method_call(_conditionFn,[_target]))
 	        {
 	            show_debug_message("Target rejected by condition function.");
 	            target = noone;
 	            return false; // or handle as you prefer
 	        }
 	    }
-
-	    target = instance_nearest(x,y,_target);
+		
+		
+	    target = instance_nearest(other.x,other.y,_target);
 	    targetMode = _mode;
+		
+		//show_debug_message($"Target Set: {target}");
 	    return true;
 		
 		//target = _target;
