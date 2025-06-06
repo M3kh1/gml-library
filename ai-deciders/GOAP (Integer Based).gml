@@ -10,6 +10,9 @@
 	The agent doesn’t plan every bite of food with GOAP —
 	It just planned to get to the fridge.
 
+
+	TODO:
+	fix selectGoal so it can interrupt easier/correctly
 	add a animation manager maybe?
 	
 */
@@ -235,16 +238,19 @@ function brainGOAP(_ownerObj=other.id) constructor
 		
 		if !struct_exists(goals, _goalName)
 		{
-			Log.logWarning("Set target goal failed. Goal DNE.");
+			Log.logWarning($"Set target goal failed. Goal '{_goalName}' DNE.");
 			return;
 		}
 		
 		var _tempGoal = struct_get(goals, _goalName);
+		
+		
 		if targetGoal != _tempGoal
 		{
+			//show_debug_message("Goal name check");
 			targetGoal = _tempGoal;
 		} else {
-			Log.logWarning("Trying to set a goal thats alrdy chosen.");
+			Log.logDebug($"Trying to set the current goal to '{_tempGoal.name}' thats alrdy chosen.");
 		}
 		
 	}
@@ -422,10 +428,10 @@ function brainGOAP(_ownerObj=other.id) constructor
 		
 		
 		// If there's no goal or it's already satisfied, pick a new one
-	    if (targetGoal == undefined || planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
-	    {
-	        selectGoal(); // cache the best goals based on the current state of the GOAP agent to help ltr
-	    }
+	    //if (targetGoal == undefined || planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
+	    //{
+	    //    selectGoal(); // cache the best goals based on the current state of the GOAP agent to help ltr
+	    //}
 
 	    if (targetGoal == undefined)
 	    {
@@ -441,7 +447,10 @@ function brainGOAP(_ownerObj=other.id) constructor
 	    var available_actions = actions;
 		
 		show_debug_message($"Generating Plan for ({targetGoal.name})");
-		show_debug_message($"Total Actions in GOAP Brain: ({array_length(struct_get_names(actions))})");
+		
+		// Find somewhere else to put this:
+		//show_debug_message($"Total Actions in GOAP Brain: ({array_length(struct_get_names(actions))})");
+		//show_debug_message($"Total Goals in GOAP Brain: ({array_length(struct_get_names(goals))})");
 		
 	    var new_plan = planner.createPlan(current_state, goal_state);
 		
@@ -682,6 +691,8 @@ function brainGOAP(_ownerObj=other.id) constructor
 	    ownerObj.y += lengthdir_y(spd, angle);
 	}
 
+
+	
 	selectGoal = function()
 	{
 		
@@ -697,6 +708,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 			var _goalPriority = _goal.priority;
 			
 			var _urgency = (planner.simpleHeuristic(_currState, _targetState) * _goalPriority);
+			//var _urgency = _goalPriority;
 			
 			if _urgency > _highestUrgency
 			{
@@ -721,16 +733,36 @@ function brainGOAP(_ownerObj=other.id) constructor
 	
 	
 	// Run everything
+	// fix the goal interruption
 	doPlan = function()
 	{
-	   
+		var _prevGoal = targetGoal;
+	    selectGoal();
+
+	    if (_prevGoal != targetGoal)
+	    {
+	        LogPlanExe.logInfo("Goal changed mid-execution. Replanning...");
+			resetActionState();
+	        generatePlan();
+	        return;
+	    }
+		//show_debug_message($"_prevGoal: {_prevGoal.name}, targetGoal: {targetGoal.name}");
+		
 		if (targetGoal == undefined || plan == undefined || array_length(plan) == 0)
 	    {
 	        LogPlanExe.logDebug("No valid plan or goal. Attempting to generate...");
 	        generatePlan();
 	        return;
 	    }
+		
+		
+		if (currentActionIndex >= array_length(plan))
+		{
+			goalComplete();
+			return;
+		}
 
+		
 	    var actionName = plan[currentActionIndex];
 	    if (!struct_exists(actions, actionName))
 	    {
@@ -754,9 +786,17 @@ function brainGOAP(_ownerObj=other.id) constructor
 			}
 
 			// Assign and validate target before acting on it
-			if (action.target == noone && action.targetMode != actionTargetModeExecution.none)
+			
+			//action.target = resolveTargetForAction(action);
+			
+			// Re-resolve the target after reaching
+			var newTarget = resolveTargetForAction(action);
+			if (newTarget != action.target)
 			{
-				action.target = resolveTargetForAction(action);
+				action.target = newTarget;
+				resetActionState();
+				LogPlanExe.logInfo($"Target updated to new best choice for '{action.name}' after reaching old target.");
+				//return;
 			}
 
 			if (validateAndResolveTarget(action)) return;
@@ -814,9 +854,10 @@ function brainGOAP(_ownerObj=other.id) constructor
 
 			if (validateAndResolveTarget(action)) return;
 
-
+			//show_debug_message("Check action interruption");
+			
 	        // Check for interruption
-	        if (action.isInterruptible && !planner.checkKeysMatch(action.conditions, captureSensorSnapshot()))
+	        if (action.isInterruptible) && !planner.checkKeysMatch(action.conditions, captureSensorSnapshot())
 	        {
 	            LogPlanExe.logInfo($"{actionName} was interrupted.");
                 
@@ -3082,7 +3123,6 @@ function nodeGOAP(_name) constructor
 	
 	
 }
-
 
 
 
