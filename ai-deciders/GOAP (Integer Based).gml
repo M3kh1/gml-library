@@ -126,8 +126,6 @@ function deepMergeStructs(a, b)
 enum actionTargetModeExecution
 {
 	none,
-	dontMove, // the movement stuff doesnt happen when interacting 
-	interact, // Interact with the target, must already be within valid range
 	MoveBeforePerforming,
 	PerformWhileMoving,
 }
@@ -288,7 +286,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 	
 	
 	// Target Stuff
-	registerTarget = function(_name, _obj, _conditionFunct, _maxRange=undefined, _interactRange=undefined, _mode=registerTargetMode.NEAREST)
+	registerTarget = function(_name, _obj, _conditionFunct, _maxRange=undefined, _mode=registerTargetMode.NEAREST)
 	{
 		// Optional: targetMode: "nearest" | "random" | "bestScore"
 		// bestScore EX: Weighted/scored targets (e.g. "pick bush with most berries")
@@ -303,7 +301,6 @@ function brainGOAP(_ownerObj=other.id) constructor
 			conditionFn: _conditionFunct,
 			mode: _mode,
 			maxRange: _maxRange,
-			interactRange: _interactRange,
 		};
 	
 		targets[$ _name] = _data;
@@ -459,6 +456,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 		
 		Log.logDebug($"New plan: ({array_length(new_plan)}) generated successfully in ({_endTime} ms | {_endTime/1000} s) so abt. ({round(_endTime/(16.67))} frames).");
 		
+		
 		printPlan();
 		
 	    return true;
@@ -529,40 +527,34 @@ function brainGOAP(_ownerObj=other.id) constructor
 	
 	#region		<Run the Plan>
 	
-	LogPlanExe = new Logger("GOAP/Brain/Plan-Executor", true, [LogLevel.warning]);
+	LogPlanExe = new Logger("GOAP/Brain/Plan-Executor", true, [LogLevel.info, LogLevel.warning]);
 	
-	checkReactionDelta = function(startState, endState, expectedChanges)
+	checkReactionDelta = function(_before, _after, _reactions)
 	{
-	    var keys = struct_get_names(expectedChanges);
-
+	    var keys = struct_get_names(_reactions);
 	    for (var i = 0; i < array_length(keys); i++)
 	    {
 	        var key = keys[i];
+	        var expected = _reactions[$ key];
+	        var before = _before[$ key];
+	        var after = _after[$ key];
 
-	        if (!struct_exists(startState, key) || !struct_exists(endState, key))
-	        {
-	            show_debug_message("Missing key: " + key);
-	            return false;
-	        }
-
-	        var expected = expectedChanges[$ key];
-	        var startVal = startState[$ key];
-	        var endVal = endState[$ key];
-
-	        // If expected is bool, just compare directly
+	        // Handle booleans or exact values
 	        if (is_bool(expected))
 	        {
-	            if (endVal != expected) return false;
+	            if (after != expected) return false;
 	        }
 	        else
 	        {
-	            var delta = endVal - startVal;
-	            if (delta != expected && endVal != expected) return false;
+	            var actual = after - before;
+
+	            if (sign(expected) != sign(actual)) return false;
+	            if (abs(actual) < abs(expected)) return false;
 	        }
 	    }
-
 	    return true;
 	}
+
 	
 	goalComplete = function()
 	{
@@ -592,8 +584,6 @@ function brainGOAP(_ownerObj=other.id) constructor
 		if (def == undefined) return noone;
 
 		var inst = getTarget(_action.targetKey);
-		if (inst == noone) return noone;
-		if (def.conditionFn != undefined && !method_call(def.conditionFn, [inst])) return noone;
 
 		return inst;
 	}
@@ -624,7 +614,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 	    }
 
 	    var dist = point_distance(ownerObj.x, ownerObj.y, target_x, target_y);
-	    return (dist <= tolerance); // Adjust tolerance as needed
+	    return (dist < tolerance); // Adjust tolerance as needed
 	}
 
 	moveTowardTarget = function(target, spd = 1)
@@ -677,7 +667,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 			
 		}
 		
-		var minimumActivationUrgency = 1; // Or 0, depending on your urgency scale.
+		var minimumActivationUrgency = 0; // Or 0, depending on your urgency scale.
 	    if (_highestUrgency > minimumActivationUrgency) and (_bestGoal != undefined) 
 		{
 	        //show_debug_message($"Found best goal: {_bestGoal.name} with urgency: {_highestUrgency}");
@@ -695,14 +685,19 @@ function brainGOAP(_ownerObj=other.id) constructor
 	doPlan = function()
 	{
 	    selectGoal(); // cache the best goals based on the current state of the GOAP agent to help
-
+		
+		//show_debug_message("After Select Goal");
+		
 	    if (targetGoal == undefined) return;
+		
+		//show_debug_message("Goal isnt Undefined");
 
-	    if (planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
-	    {
-	        LogPlanExe.logDebug($"Target Goal: {targetGoal.name} already completed.");
-	        return;
-	    }
+	    //if (planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
+	    //{
+	    //    LogPlanExe.logDebug($"Target Goal: {targetGoal.name} already completed.");
+		//	goalComplete();
+	    //    return;
+	    //}
 
 	    if (plan == undefined || array_length(plan) == 0)
 	    {
@@ -711,12 +706,9 @@ function brainGOAP(_ownerObj=other.id) constructor
 	        return;
 	    }
 
-	    if (currentActionIndex >= array_length(plan))
-	    {
-	        goalComplete();
-	        return;
-	    }
 
+		//show_debug_message("Handle action Exe");
+		
 	    var actionName = plan[currentActionIndex];
 	    if (!struct_exists(actions, actionName))
 	    {
@@ -727,7 +719,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 
 	    var action = actions[$ actionName];
 
-
+		//show_debug_message("Handle action Exe");
 		
 	    // Handle action execution state:
 	    if (!currentActionState.started)
@@ -743,23 +735,31 @@ function brainGOAP(_ownerObj=other.id) constructor
 			
 			
 			
-			action.target = resolveTargetForAction(action);
+			
 			if (action.target == noone && action.targetMode != actionTargetModeExecution.none)
 			{
-				LogPlanExe.logWarning("Failed to resolve target.");
-				resetActionState();
-				generatePlan();
-				return;
-			}
+			    action.target = resolveTargetForAction(action);
 			
-			var _t = action.target;
+				var def = targets[$ action.targetKey];
+				if (def != undefined && def.conditionFn != undefined && !method_call(def.conditionFn, [action.target]))
+				{
+					LogPlanExe.logWarning("Target invalid before execution. Find the next best target...");
+					action.target = resolveTargetForAction(action);
+					resetActionState();
+					//generatePlan();
+					//return;
+				}
+			}
+
 			
 			switch (action.targetMode)
 			{
 				case actionTargetModeExecution.MoveBeforePerforming:
-					if (!hasReachedTarget(_t))
+					//action.target = resolveTargetForAction(action);
+					
+					if (!hasReachedTarget(action.target))
 					{
-						moveTowardTarget(_t);
+						moveTowardTarget(action.target);
 						return; // Wait until we're in range
 					}
 					
@@ -767,74 +767,74 @@ function brainGOAP(_ownerObj=other.id) constructor
 
 
 				case actionTargetModeExecution.PerformWhileMoving:
-					moveTowardTarget(_t); // Start moving and let it act while in motion
+					//action.target = resolveTargetForAction(action);
+					moveTowardTarget(action.target); // Start moving and let it act while in motion
 				break;
 				
-				case actionTargetModeExecution.interact:
-					
-					var _range = action.maxInteractionRange;
-					
-					if is_undefined(_range)
-					{
-						break; // means that it can interact from anywhere
-					}
-					
-					if (!point_distance(ownerObj.x, ownerObj.y, _t.x, _t.y) <= _range)
-				    {
-						show_debug_message($"Cannot Interact from: {_range}");
-						return;
-				    }
-					
-				break;
-
-
-				case actionTargetModeExecution.dontMove:
-					// Don't move, just wait - target must still be valid and nearby
-					
-					var def = targets[$ action.targetKey];
-					if (def != undefined && def.conditionFn != undefined && !method_call(def.conditionFn, [action.target]))
-					{
-						LogPlanExe.logWarning("Target became invalid before execution. Replanning...");
-						resetActionState();
-						generatePlan();
-						return;
-					}
-					
-					
-				break;
-
 
 				case actionTargetModeExecution.none:
 					// No target or movement involved
-					return;
+					//return;
 				break;
 			}
-
+			
 			
 
-	        // Mark action started
+	        
+			
+			if (action.target != noone)
+			{
+				var def = targets[$ action.targetKey];
+				if (def != undefined && def.conditionFn != undefined && !method_call(def.conditionFn, [action.target]))
+				{
+					LogPlanExe.logWarning("Target is no longer valid just before execution. Replanning...");
+					//resetActionState();
+					//generatePlan();
+					action.target = resolveTargetForAction(action);
+					//return;
+				}
+			}
+
+			// Mark action started
 	        currentActionState.started = true;
 	        currentActionState.startSnapshot = captureSensorSnapshot();
 			
 	        // Call action's execute function
 	        action.execute();
-
+			
+			// Check if goal is completed after 
+			if (planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
+			{
+			    LogPlanExe.logInfo($"Target Goal: {targetGoal.name} completed.");
+				goalComplete();
+			    return;
+			}
+			
 	        return; // wait for next frame to check progress
 	    }
 	    else
 	    {
-	        // Action is running - check for success by comparing reactions
-	        if (checkReactionDelta(currentActionState.startSnapshot, captureSensorSnapshot(), action.reactions))
-	        {
-	            LogPlanExe.logInfo($"{actionName} completed.");
+	        
+			
+			
+			// Debug print reaction diff
+			var deltaCheck = checkReactionDelta(currentActionState.startSnapshot, captureSensorSnapshot(), action.reactions);
+			//show_debug_message("ReactionDelta check: " + string(deltaCheck));
+			if (deltaCheck)
+			{
+			    // log completion and increment
+				LogPlanExe.logInfo($"{actionName} completed.");
                 
 	            // Reset action state and move to next action
 				resetActionState();
 				
 	            currentActionIndex++;
-	            return;
-	        }
+				
+				//show_debug_message($"currentActionIndex: {currentActionIndex}");
+				
+			}
 			
+
 			// Recheck if target still meets the condition
 			if (action.target != noone && action.targetMode != actionTargetModeExecution.none)
 			{
@@ -842,11 +842,15 @@ function brainGOAP(_ownerObj=other.id) constructor
 				if (def != undefined && def.conditionFn != undefined && !method_call(def.conditionFn, [action.target]))
 				{
 					LogPlanExe.logWarning("Target became invalid during execution. Replanning...");
+					action.target = resolveTargetForAction(action);
 					resetActionState();
-					generatePlan();
+					//generatePlan();
+					LogPlanExe.logInfo($"Action '{actionName}' target changed during execution.");
+
 					return;
 				}
 			}
+			
 
 
 	        // Check for interruption
@@ -3158,11 +3162,10 @@ function actionGOAP(_name, _cost) : nodeGOAP(_name) constructor
 		maxInteractionRange = _val;
 	}
 	
-	setTarget = function(_targetName, _mode=actionTargetModeExecution.MoveBeforePerforming) // , _maxRange=undefined
+	setTarget = function(_targetName, _mode=actionTargetModeExecution.MoveBeforePerforming)
 	{
 		targetKey = _targetName;
 		targetMode = _mode;
-		//maxTargetRange = _maxRange;
 	}
 	
 	// leave ts off (false)
