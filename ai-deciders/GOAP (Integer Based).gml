@@ -10,13 +10,7 @@
 	The agent doesn’t plan every bite of food with GOAP —
 	It just planned to get to the fridge.
 
-
-	Add These:
-	
-	one thing im thinking is 
-	setTimer
-	setTargetPosition() or setTargetObject()
-	for animations maybe a animation manager?
+	add a animation manager maybe?
 	
 */
 
@@ -154,7 +148,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 	show_debug_message($"Owner OBJ: {ownerObj}");
 	targetGoal = undefined;
 	
-	Log = new Logger("GOAP/Brain", true, [LogLevel.debug]);
+	Log = new Logger("GOAP/Brain", true, [LogLevel.warning]);
 	
 	planner = new plannerGOAP(actions, targetGoal); 
 	plan = [];
@@ -421,16 +415,27 @@ function brainGOAP(_ownerObj=other.id) constructor
 	
 	generatePlan = function()
 	{
+		
+		
+		
 	    var _startTime = current_time;
-    
+		
+		
+		// If there's no goal or it's already satisfied, pick a new one
+	    if (targetGoal == undefined || planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
+	    {
+	        selectGoal(); // cache the best goals based on the current state of the GOAP agent to help ltr
+	    }
+
+	    if (targetGoal == undefined)
+	    {
+	        Log.logDebug("No valid goal selected. Plan generation aborted.");
+	        return false;
+	    }
+		
+		
 	    var current_state = captureSensorSnapshot();
 		
-		if is_undefined(targetGoal)
-		{
-			Log.logDebug("No valid plan could be generated.");
-			
-		    return false;
-		}
 		
 	    var goal_state = targetGoal.conditions;
 	    var available_actions = actions;
@@ -461,6 +466,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 		
 	    return true;
 	}
+	
 	
 	captureSensorSnapshot = function()
 	{
@@ -556,25 +562,58 @@ function brainGOAP(_ownerObj=other.id) constructor
 	}
 
 	
+	
+
+	restartPlanning = function(_reason = "Unknown")
+	{
+		LogPlanExe.logInfo($"Restarting planning due to: {_reason}");
+	
+		targetGoal = undefined;
+		
+		
+		initPlan();
+		
+		resetActionState();
+	
+		generatePlan();
+	}
+
 	goalComplete = function()
 	{
-		LogPlanExe.logInfo($"Plan Completed For Goal: {targetGoal.name}");
-	    generatePlan();
+		//LogPlanExe.logInfo($"Plan Completed For Goal: {targetGoal.name}");
+		restartPlanning("Goal Completed");
 	}
 
 	handleFailure = function()
 	{
-	    //show_debug_message("[GOAP] Plan failed.");
-	    generatePlan();
-		
+		restartPlanning("Plan Failure");
 	}
 
 	handleInterruption = function()
 	{
-	    //show_debug_message("[GOAP] Plan interrupted. Replanning...");
-	    generatePlan();
+		restartPlanning("Action Interrupted");
 	}
+
 	
+	validateAndResolveTarget = function(_action)
+	{
+		if (_action.targetMode == actionTargetModeExecution.none || _action.target == noone) return false;
+		
+		var _actionName = _action.name;
+		
+		var def = targets[$ _action.targetKey];
+		if (def != undefined && def.conditionFn != undefined && !method_call(def.conditionFn, [_action.target]))
+		{
+			//LogPlanExe.logWarning($"Target became invalid during '{_actionName}'. Replanning...");
+			_action.target = resolveTargetForAction(_action);
+			resetActionState();
+			LogPlanExe.logInfo($"Action '{_actionName}' target changed during execution.");
+			return true;
+		}
+
+		return false;
+	}
+
 	
     resolveTargetForAction = function(_action)
 	{
@@ -684,31 +723,14 @@ function brainGOAP(_ownerObj=other.id) constructor
 	// Run everything
 	doPlan = function()
 	{
-	    selectGoal(); // cache the best goals based on the current state of the GOAP agent to help
-		
-		//show_debug_message("After Select Goal");
-		
-	    if (targetGoal == undefined) return;
-		
-		//show_debug_message("Goal isnt Undefined");
-
-	    //if (planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
-	    //{
-	    //    LogPlanExe.logDebug($"Target Goal: {targetGoal.name} already completed.");
-		//	goalComplete();
-	    //    return;
-	    //}
-
-	    if (plan == undefined || array_length(plan) == 0)
+	   
+		if (targetGoal == undefined || plan == undefined || array_length(plan) == 0)
 	    {
-	        LogPlanExe.logWarning("Plan isn't valid.");
+	        LogPlanExe.logDebug("No valid plan or goal. Attempting to generate...");
 	        generatePlan();
 	        return;
 	    }
 
-
-		//show_debug_message("Handle action Exe");
-		
 	    var actionName = plan[currentActionIndex];
 	    if (!struct_exists(actions, actionName))
 	    {
@@ -723,100 +745,55 @@ function brainGOAP(_ownerObj=other.id) constructor
 		
 	    // Handle action execution state:
 	    if (!currentActionState.started)
-	    {
-			
-	        // Check preconditions once before starting
-	        if (!planner.checkKeysMatch(action.conditions, captureSensorSnapshot()))
-	        {
-	            LogPlanExe.logDebug($"Preconditions failed for '{actionName}' (before start). Replanning...");
-	            generatePlan();
-	            return;
-	        }
-			
-			
-			
-			
-			if (action.target == noone && action.targetMode != actionTargetModeExecution.none)
+		{
+			if (!planner.checkKeysMatch(action.conditions, captureSensorSnapshot()))
 			{
-			    action.target = resolveTargetForAction(action);
-			
-				var def = targets[$ action.targetKey];
-				if (def != undefined && def.conditionFn != undefined && !method_call(def.conditionFn, [action.target]))
-				{
-					LogPlanExe.logWarning("Target invalid before execution. Find the next best target...");
-					action.target = resolveTargetForAction(action);
-					resetActionState();
-					//generatePlan();
-					//return;
-				}
+				LogPlanExe.logDebug($"Preconditions failed for '{actionName}' (before start). Replanning...");
+				generatePlan();
+				return;
 			}
 
-			
+			// Assign and validate target before acting on it
+			if (action.target == noone && action.targetMode != actionTargetModeExecution.none)
+			{
+				action.target = resolveTargetForAction(action);
+			}
+
+			if (validateAndResolveTarget(action)) return;
+
+			// Now safe to move or check position
 			switch (action.targetMode)
 			{
 				case actionTargetModeExecution.MoveBeforePerforming:
-					//action.target = resolveTargetForAction(action);
-					
 					if (!hasReachedTarget(action.target))
 					{
 						moveTowardTarget(action.target);
-						return; // Wait until we're in range
+						return;
 					}
-					
 				break;
-
 
 				case actionTargetModeExecution.PerformWhileMoving:
-					//action.target = resolveTargetForAction(action);
-					moveTowardTarget(action.target); // Start moving and let it act while in motion
-				break;
-				
-
-				case actionTargetModeExecution.none:
-					// No target or movement involved
-					//return;
+					moveTowardTarget(action.target);
 				break;
 			}
-			
-			
+	
+			currentActionState.started = true;
+			currentActionState.startSnapshot = captureSensorSnapshot();
 
-	        
-			
-			if (action.target != noone)
-			{
-				var def = targets[$ action.targetKey];
-				if (def != undefined && def.conditionFn != undefined && !method_call(def.conditionFn, [action.target]))
-				{
-					LogPlanExe.logWarning("Target is no longer valid just before execution. Replanning...");
-					//resetActionState();
-					//generatePlan();
-					action.target = resolveTargetForAction(action);
-					//return;
-				}
-			}
+			action.execute();
 
-			// Mark action started
-	        currentActionState.started = true;
-	        currentActionState.startSnapshot = captureSensorSnapshot();
-			
-	        // Call action's execute function
-	        action.execute();
-			
-			// Check if goal is completed after 
 			if (planner.checkKeysMatch(targetGoal.conditions, captureSensorSnapshot()))
 			{
-			    LogPlanExe.logInfo($"Target Goal: {targetGoal.name} completed.");
 				goalComplete();
-			    return;
+				return;
 			}
-			
-	        return; // wait for next frame to check progress
-	    }
+
+			return;
+		}
+
 	    else
 	    {
 	        
-			
-			
 			// Debug print reaction diff
 			var deltaCheck = checkReactionDelta(currentActionState.startSnapshot, captureSensorSnapshot(), action.reactions);
 			//show_debug_message("ReactionDelta check: " + string(deltaCheck));
@@ -835,22 +812,7 @@ function brainGOAP(_ownerObj=other.id) constructor
 			}
 			
 
-			// Recheck if target still meets the condition
-			if (action.target != noone && action.targetMode != actionTargetModeExecution.none)
-			{
-				var def = targets[$ action.targetKey];
-				if (def != undefined && def.conditionFn != undefined && !method_call(def.conditionFn, [action.target]))
-				{
-					LogPlanExe.logWarning("Target became invalid during execution. Replanning...");
-					action.target = resolveTargetForAction(action);
-					resetActionState();
-					//generatePlan();
-					LogPlanExe.logInfo($"Action '{actionName}' target changed during execution.");
-
-					return;
-				}
-			}
-			
+			if (validateAndResolveTarget(action)) return;
 
 
 	        // Check for interruption
