@@ -1,107 +1,96 @@
 
-enum LogLevel
+function Logger(_name="Logger", _showLog=true) constructor
 {
-	debug,
-	info,
-	warning,
-	profile,
-}
+    name = _name;
+    logs = [];
+    showLog = _showLog;
+    showTags = []; // empty = show all
+	excludeTags = false; // false should filter only for the selected tags, true do the opposite
+    showTimeStamp = false;
+	
+    
+    function LogData(_msg, _tag) constructor
+    {
+        timeStamp = $"[{current_hour}:{current_minute}:{current_second}]";
+        msg = _msg;
+        tag = _tag;
+    }
+    
+	
+	setShowTimeStamp = function(_bool)
+	{
+		showTimeStamp = _bool;
+	}
 
-function Logger(_name="Logger", _showLog=true, _showLevels=[LogLevel.debug, LogLevel.info, LogLevel.warning, LogLevel.profile], _showTimeStamp=false) constructor
-{
-	name = _name;
-	logs = [];
-	
-	showLog = _showLog;
-	showLevels = _showLevels;
-	showTimeStamp = _showTimeStamp; 
-	
-	
-	logLvlToString = function(_lvl)
+	setTagFilter = function(_tags=[], _exclude=false)
 	{
-		var _finalStr = "";
-		switch(_lvl)
-		{
-			case LogLevel.debug: _finalStr = "debug"; break;
-			case LogLevel.info: _finalStr = "info"; break;
-			case LogLevel.warning: _finalStr = "warning"; break;
-			case LogLevel.profile: _finalStr = "profile"; break;
-		}
-		
-		return _finalStr;
+	    showTags = _tags; // empty array = show all
+		excludeTags = _exclude;
 	}
 	
+	#region > Log Functions
 	
-	function LogData(_msg, _level) constructor
+	log = function(_tag, _msg)
 	{
-		timeStamp = $"[{current_hour}:{current_minute}:{current_second}]";
-		msg = _msg;
-		level = _level;
-		
-	}
-	
-	log = function(_msg, _lvl)
-	{
-		
-		var _finalMsg = $"[{name}][{logLvlToString(_lvl)}] ~ {_msg}";
-		
-		// Save the log
-		var _logEntry = new LogData(_msg, _lvl);
-		array_push(logs, _logEntry); // <-- use LogData here
-		
-		var _timeStamp = _logEntry.timeStamp;
-		
-		if showTimeStamp
-		{
-			_finalMsg = _timeStamp+_finalMsg;
-		}
+	    var _logEntry = new LogData(_msg, _tag);
+	    array_push(logs, _logEntry);
 
-		// Show if enabled
-		if (showLog) and (array_contains(showLevels, _lvl))
-		{
-			show_debug_message(_finalMsg);
-		}
-		
+	    var _finalMsg = $"[{name}][{_tag}] ~ {_msg}";
+	    if showTimeStamp _finalMsg = _logEntry.timeStamp + _finalMsg;
+
+	    if showLog
+	    {
+	        if (array_length(showTags) == 0)
+	        {
+	            // No filtering, show everything
+	            show_debug_message(_finalMsg);
+	        }
+	        else if (excludeTags)
+	        {
+	            // Blacklist mode
+	            if (!array_contains(showTags, _tag)) show_debug_message(_finalMsg);
+	        }
+	        else
+	        {
+	            // Whitelist mode
+	            if (array_contains(showTags, _tag)) show_debug_message(_finalMsg);
+	        }
+	    }
 	}
+    
 	
-	logInfo = function(_msg)
+	// Base tags
+    logInfo = function(_msg) { log("info", _msg); }
+    logDebug = function(_msg) { log("debug", _msg); }
+    logWarning = function(_msg) { log("warning", _msg); }
+    logProfile = function(_msg) { log("profile", _msg); }
+    
+	// --- Print all stored logs for a specific tag ---
+	printLog = function(_tag)
 	{
-		log(_msg, LogLevel.info);
+	    for (var i = 0; i < array_length(logs); i++)
+	    {
+	        var _entry = logs[i];
+	        if ((excludeTags && !array_contains(showTags, _entry.tag)) || (!excludeTags && array_length(showTags) == 0)
+			|| (!excludeTags && array_contains(showTags, _entry.tag)) ||  _entry.tag == _tag) // always print specific tag requested
+	        {
+	            var _finalMsg = $"[{name}][{_entry.tag}] ~ {_entry.msg}";
+	            if (showTimeStamp) _finalMsg = _entry.timeStamp + _finalMsg;
+	            show_debug_message(_finalMsg);
+	        }
+	    }
 	}
 	
-	logDebug = function(_msg)
-	{
-		log(_msg, LogLevel.debug);
-	}
-	
-	logWarning = function(_msg)
-	{
-		log(_msg, LogLevel.warning);
-	}
-	
-	logProfile = function(_msg)
-	{
-		log(_msg, LogLevel.profile);
-	}
-	
-	doProfile = function(_tag, _func, _args=[])
-	{
-		
-		var _st = current_time;
-		
-		var _result = method_call(_func, _args);
-		
-		var _et = current_time - _st;
-		
-		logProfile($"{_tag} took ({_et} ms).");
-		
-		return _result;
-		
-	}
-	
-	printLog = function(_lvl)
-	{
-		//idk yet
-	}
-	
+	#endregion
+
+    
+	// Custom function profiler
+    doProfile = function(_tag, _func, _args=[])
+    {
+        var _st = current_time;
+        var _result = method_call(_func, _args);
+        var _et = current_time - _st;
+        log($"{_tag} took ({_et} ms).", "profile");
+        return _result;
+    }
 }
