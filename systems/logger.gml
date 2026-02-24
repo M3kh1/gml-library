@@ -35,7 +35,7 @@ function Logger(_name="Logger", _showLog=true) constructor
 	    var _logEntry = new LogData(_msg, _tag);
 	    array_push(logs, _logEntry);
 
-	    var _finalMsg = $"[{name}][{_tag}] ~ {_msg}";
+	    var _finalMsg = $"[{name} | {_tag}] ~ {_msg}";
 	    if showTimeStamp _finalMsg = _logEntry.timeStamp + _finalMsg;
 
 	    if showLog
@@ -74,7 +74,7 @@ function Logger(_name="Logger", _showLog=true) constructor
 	        if ((excludeTags && !array_contains(showTags, _entry.tag)) || (!excludeTags && array_length(showTags) == 0)
 			|| (!excludeTags && array_contains(showTags, _entry.tag)) ||  _entry.tag == _tag) // always print specific tag requested
 	        {
-	            var _finalMsg = $"[{name}][{_entry.tag}] ~ {_entry.msg}";
+	            var _finalMsg = $"[{name} | {_entry.tag}] ~ {_entry.msg}";
 	            if (showTimeStamp) _finalMsg = _entry.timeStamp + _finalMsg;
 	            show_debug_message(_finalMsg);
 	        }
