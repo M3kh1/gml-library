@@ -2,21 +2,21 @@
 
 
 
-global.ebus = new PubSubSystem("MainEventBus");
+global.ebus = new EventBus("MainEventBus");
 #macro EBUS global.ebus 
 
-DONT just make it a macro or it will count the new PubSubSystem as a seprate inst under the hood
+DONT just make it a macro or it will count the new EventBus as a seprate inst under the hood
 
 
 */
 
 
 
-global.ebus = new PubSubSystem("MainEventBus");
+global.ebus = new EventBus("MainEventBus");
 #macro EBUS global.ebus 
 
 
-function PubSubSystem(bus_name = "event_bus") constructor
+function EventBus(bus_name = "event_bus") constructor
 {
 	name = bus_name;
 	event_listeners = {};
