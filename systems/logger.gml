@@ -14,6 +14,7 @@ function Logger(_name="Logger", _showLog=true) constructor
         timeStamp = $"[{current_hour}:{current_minute}:{current_second}]";
         msg = _msg;
         tag = _tag;
+		//exclude = false;
     }
     
 	
@@ -30,12 +31,12 @@ function Logger(_name="Logger", _showLog=true) constructor
 	
 	#region > Log Functions
 	
-	log = function(_tag, _msg)
+	log = function(_tag, _msg, _exclude=false)
 	{
 	    var _logEntry = new LogData(_msg, _tag);
 	    array_push(logs, _logEntry);
 
-	    var _finalMsg = $"[{name} | {_tag}] ~ {_msg}";
+	    var _finalMsg = $"[{name}][{_tag}] ~ {_msg}";
 	    if showTimeStamp _finalMsg = _logEntry.timeStamp + _finalMsg;
 
 	    if showLog
@@ -43,7 +44,7 @@ function Logger(_name="Logger", _showLog=true) constructor
 	        if (array_length(showTags) == 0)
 	        {
 	            // No filtering, show everything
-	            show_debug_message(_finalMsg);
+	            if (_exclude != true) show_debug_message(_finalMsg);
 	        }
 	        else if (excludeTags)
 	        {
@@ -60,10 +61,11 @@ function Logger(_name="Logger", _showLog=true) constructor
     
 	
 	// Base tags
-    logInfo = function(_msg) { log("info", _msg); }
-    logDebug = function(_msg) { log("debug", _msg); }
-    logWarning = function(_msg) { log("warning", _msg); }
-    logProfile = function(_msg) { log("profile", _msg); }
+    logInfo = function(_msg, _exclude=false) { log("info", _msg, _exclude); }
+    logDebug = function(_msg, _exclude=false) { log("debug", _msg, _exclude); }
+    logWarning = function(_msg, _exclude=false) { log("warning", _msg, _exclude); }
+    logError = function(_msg, _exclude=false) { log("error", _msg, _exclude); }
+    logProfile = function(_msg, _exclude=false) { log("profile", _msg, _exclude); }
     
 	// --- Print all stored logs for a specific tag ---
 	printLog = function(_tag)
