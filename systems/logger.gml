@@ -14,7 +14,6 @@ function Logger(_name="Logger", _showLog=true) constructor
         timeStamp = $"[{current_hour}:{current_minute}:{current_second}]";
         msg = _msg;
         tag = _tag;
-		//exclude = false;
     }
     
 	
