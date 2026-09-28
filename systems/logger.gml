@@ -38,12 +38,12 @@ function Logger(_name="Logger", _showLog=true) constructor
 	    var _finalMsg = $"[{name}][{_tag}] ~ {_msg}";
 	    if showTimeStamp _finalMsg = _logEntry.timeStamp + _finalMsg;
 
-	    if showLog
+	    if showLog && _exclude == false
 	    {
 	        if (array_length(showTags) == 0)
 	        {
 	            // No filtering, show everything
-	            if (_exclude != true) show_debug_message(_finalMsg);
+	            show_debug_message(_finalMsg);
 	        }
 	        else if (excludeTags)
 	        {
